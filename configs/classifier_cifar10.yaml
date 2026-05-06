@@ -1,0 +1,33 @@
+seed: 123
+
+data:
+  root: "data"
+  batch_size: 256
+  num_workers: 2
+  val_fraction: 0.1
+  download: true
+
+diffusion:
+  timesteps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
+  schedule: "linear"
+
+model:
+  num_classes: 10
+  base_channels: 96
+  time_embedding_dim: 128
+  dropout: 0.1
+  activation: "silu"
+
+training:
+  epochs: 50
+  lr: 0.0001
+  weight_decay: 0.00001
+  amp: true
+  grad_clip: 1.0
+  log_every: 50
+
+checkpoint:
+  dir: "checkpoints"
+  filename: "classifier_cifar10.pt"
