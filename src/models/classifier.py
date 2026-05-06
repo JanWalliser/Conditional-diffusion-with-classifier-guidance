@@ -8,6 +8,16 @@ import torch.nn as nn
 
 
 class SinusoidalTimeEmbedding(nn.Module):
+    """
+    Sinusoidal timestep embedding.
+
+    Input:
+        t: Tensor of shape [B]
+
+    Output:
+        embedding: Tensor of shape [B, embedding_dim]
+    """
+
     def __init__(self, embedding_dim: int) -> None:
         super().__init__()
 
@@ -17,15 +27,8 @@ class SinusoidalTimeEmbedding(nn.Module):
         self.embedding_dim = embedding_dim
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            t: Tensor of shape (batch_size,) containing timesteps.
-
-        Returns:
-            Tensor of shape (batch_size, embedding_dim).
-        """
         if t.ndim != 1:
-            raise ValueError(f"Expected t with shape (batch_size,), got {tuple(t.shape)}")
+            raise ValueError(f"Expected t with shape [B], got {tuple(t.shape)}")
 
         half_dim = self.embedding_dim // 2
         t = t.float()
@@ -42,7 +45,33 @@ class SinusoidalTimeEmbedding(nn.Module):
         return embedding
 
 
-class TimeConditionedConvBlock(nn.Module):
+def make_group_norm(channels: int, max_groups: int = 8) -> nn.GroupNorm:
+    """
+    Create GroupNorm with a valid number of groups.
+    """
+    groups = min(max_groups, channels)
+
+    while channels % groups != 0:
+        groups -= 1
+
+    return nn.GroupNorm(num_groups=groups, num_channels=channels)
+
+
+class TimeConditionedResidualBlock(nn.Module):
+    """
+    Residual block with timestep conditioning.
+
+    The timestep embedding is projected to the number of output channels and
+    added after the first convolution.
+
+    Input:
+        x:     [B, in_channels, H, W]
+        t_emb: [B, time_embedding_dim]
+
+    Output:
+        h:     [B, out_channels, H', W']
+    """
+
     def __init__(
         self,
         in_channels: int,
@@ -51,11 +80,22 @@ class TimeConditionedConvBlock(nn.Module):
         *,
         stride: int = 1,
         dropout: float = 0.0,
-        activation: Literal["relu", "gelu", "silu"] = "silu",
+        activation: Literal["silu", "relu", "gelu"] = "silu",
     ) -> None:
         super().__init__()
 
-        self.conv = nn.Conv2d(
+        if activation == "silu":
+            act_layer = nn.SiLU
+        elif activation == "relu":
+            act_layer = nn.ReLU
+        elif activation == "gelu":
+            act_layer = nn.GELU
+        else:
+            raise ValueError(f"Unsupported activation: {activation}")
+
+        self.norm1 = make_group_norm(in_channels)
+        self.act1 = act_layer()
+        self.conv1 = nn.Conv2d(
             in_channels,
             out_channels,
             kernel_size=3,
@@ -64,158 +104,240 @@ class TimeConditionedConvBlock(nn.Module):
             bias=False,
         )
 
-        self.norm = nn.GroupNorm(
-            num_groups=min(8, out_channels),
-            num_channels=out_channels,
-        )
-
         self.time_proj = nn.Linear(time_embedding_dim, out_channels)
 
-        if activation == "relu":
-            self.activation = nn.ReLU(inplace=True)
-        elif activation == "gelu":
-            self.activation = nn.GELU()
-        elif activation == "silu":
-            self.activation = nn.SiLU()
-        else:
-            raise ValueError(f"Unsupported activation: {activation}")
-
+        self.norm2 = make_group_norm(out_channels)
+        self.act2 = act_layer()
         self.dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
+        self.conv2 = nn.Conv2d(
+            out_channels,
+            out_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=False,
+        )
+
+        if in_channels != out_channels or stride != 1:
+            self.shortcut = nn.Conv2d(
+                in_channels,
+                out_channels,
+                kernel_size=1,
+                stride=stride,
+                padding=0,
+                bias=False,
+            )
+        else:
+            self.shortcut = nn.Identity()
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Tensor of shape (batch_size, in_channels, height, width)
-            t_emb: Tensor of shape (batch_size, time_embedding_dim)
+        residual = self.shortcut(x)
 
-        Returns:
-            Tensor of shape (batch_size, out_channels, height, width)
-        """
-        h = self.conv(x)
-        h = self.norm(h)
+        h = self.norm1(x)
+        h = self.act1(h)
+        h = self.conv1(h)
 
-        time_out = self.time_proj(t_emb)
-        time_out = time_out[:, :, None, None]
+        time_bias = self.time_proj(t_emb)
+        h = h + time_bias[:, :, None, None]
 
-        h = h + time_out
-        h = self.activation(h)
+        h = self.norm2(h)
+        h = self.act2(h)
         h = self.dropout(h)
+        h = self.conv2(h)
 
-        return h
+        return h + residual
 
 
 class NoisyImageClassifier(nn.Module):
+    """
+    Time-conditioned ResNet-style classifier for classifier-guided diffusion.
+
+    This classifier predicts the original CIFAR-10 class label y from a noisy
+    image x_t and timestep t.
+
+    Input:
+        x_t: [B, 3, 32, 32]
+        t:   [B]
+
+    Output:
+        logits: [B, num_classes]
+    """
+
     def __init__(
         self,
         num_classes: int = 10,
         base_channels: int = 64,
         time_embedding_dim: int = 128,
-        dropout: float = 0.1,
-        activation: Literal["relu", "gelu", "silu"] = "silu",
+        dropout: float = 0.0,
+        activation: Literal["silu", "relu", "gelu"] = "silu",
+        blocks_per_stage: int = 2,
     ) -> None:
         super().__init__()
 
+        if blocks_per_stage < 1:
+            raise ValueError("blocks_per_stage must be at least 1.")
+
         self.time_embedding = nn.Sequential(
             SinusoidalTimeEmbedding(time_embedding_dim),
-            nn.Linear(time_embedding_dim, time_embedding_dim),
+            nn.Linear(time_embedding_dim, time_embedding_dim * 4),
             nn.SiLU(),
-            nn.Linear(time_embedding_dim, time_embedding_dim),
+            nn.Linear(time_embedding_dim * 4, time_embedding_dim),
         )
 
-        self.conv1 = TimeConditionedConvBlock(
+        c = base_channels
+
+        self.stem = nn.Conv2d(
             in_channels=3,
-            out_channels=base_channels,
-            time_embedding_dim=time_embedding_dim,
+            out_channels=c,
+            kernel_size=3,
             stride=1,
-            dropout=dropout,
-            activation=activation,
+            padding=1,
+            bias=False,
         )
 
-        self.conv2 = TimeConditionedConvBlock(
-            in_channels=base_channels,
-            out_channels=base_channels * 2,
+        self.stage1 = self._make_stage(
+            in_channels=c,
+            out_channels=c,
             time_embedding_dim=time_embedding_dim,
-            stride=2,
+            blocks=blocks_per_stage,
+            first_stride=1,
             dropout=dropout,
             activation=activation,
         )
 
-        self.conv3 = TimeConditionedConvBlock(
-            in_channels=base_channels * 2,
-            out_channels=base_channels * 4,
+        self.stage2 = self._make_stage(
+            in_channels=c,
+            out_channels=2 * c,
             time_embedding_dim=time_embedding_dim,
-            stride=2,
+            blocks=blocks_per_stage,
+            first_stride=2,
             dropout=dropout,
             activation=activation,
         )
 
-        self.conv4 = TimeConditionedConvBlock(
-            in_channels=base_channels * 4,
-            out_channels=base_channels * 4,
+        self.stage3 = self._make_stage(
+            in_channels=2 * c,
+            out_channels=4 * c,
             time_embedding_dim=time_embedding_dim,
-            stride=2,
+            blocks=blocks_per_stage,
+            first_stride=2,
             dropout=dropout,
             activation=activation,
         )
 
+        self.stage4 = self._make_stage(
+            in_channels=4 * c,
+            out_channels=4 * c,
+            time_embedding_dim=time_embedding_dim,
+            blocks=blocks_per_stage,
+            first_stride=2,
+            dropout=dropout,
+            activation=activation,
+        )
+
+        self.final_norm = make_group_norm(4 * c)
+        self.final_act = nn.SiLU()
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
 
-        self.head = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(base_channels * 4, base_channels * 4),
-            nn.SiLU(),
-            nn.Dropout(dropout),
-            nn.Linear(base_channels * 4, num_classes),
-        )
+        self.head = nn.Linear(4 * c, num_classes)
 
         self._init_weights()
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Tensor of shape (batch_size, 3, height, width)
-            t: Tensor of shape (batch_size,)
+    def _make_stage(
+        self,
+        *,
+        in_channels: int,
+        out_channels: int,
+        time_embedding_dim: int,
+        blocks: int,
+        first_stride: int,
+        dropout: float,
+        activation: Literal["silu", "relu", "gelu"],
+    ) -> nn.ModuleList:
+        layers = nn.ModuleList()
 
-        Returns:
-            Tensor of shape (batch_size, num_classes)
-        """
-        if x.ndim != 4:
-            raise ValueError(f"Expected x with shape (B, C, H, W), got {tuple(x.shape)}")
+        layers.append(
+            TimeConditionedResidualBlock(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                time_embedding_dim=time_embedding_dim,
+                stride=first_stride,
+                dropout=dropout,
+                activation=activation,
+            )
+        )
 
-        if x.shape[1] != 3:
-            raise ValueError(f"Expected 3 input channels, got {x.shape[1]}")
+        for _ in range(blocks - 1):
+            layers.append(
+                TimeConditionedResidualBlock(
+                    in_channels=out_channels,
+                    out_channels=out_channels,
+                    time_embedding_dim=time_embedding_dim,
+                    stride=1,
+                    dropout=dropout,
+                    activation=activation,
+                )
+            )
+
+        return layers
+
+    def _forward_stage(
+        self,
+        x: torch.Tensor,
+        t_emb: torch.Tensor,
+        stage: nn.ModuleList,
+    ) -> torch.Tensor:
+        for block in stage:
+            x = block(x, t_emb)
+        return x
+
+    def forward(self, x_t: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        if x_t.ndim != 4:
+            raise ValueError(f"Expected x_t with shape [B, C, H, W], got {tuple(x_t.shape)}")
+
+        if x_t.shape[1] != 3:
+            raise ValueError(f"Expected 3 input channels, got {x_t.shape[1]}")
 
         if t.ndim != 1:
-            raise ValueError(f"Expected t with shape (B,), got {tuple(t.shape)}")
+            raise ValueError(f"Expected t with shape [B], got {tuple(t.shape)}")
 
-        if x.shape[0] != t.shape[0]:
+        if x_t.shape[0] != t.shape[0]:
             raise ValueError(
-                f"Batch size mismatch: x has batch {x.shape[0]}, t has batch {t.shape[0]}"
+                f"Batch size mismatch: x_t batch is {x_t.shape[0]}, "
+                f"t batch is {t.shape[0]}"
             )
 
         t_emb = self.time_embedding(t)
 
-        x = self.conv1(x, t_emb)
-        x = self.conv2(x, t_emb)
-        x = self.conv3(x, t_emb)
-        x = self.conv4(x, t_emb)
+        h = self.stem(x_t)
 
-        x = self.pool(x)
-        logits = self.head(x)
+        h = self._forward_stage(h, t_emb, self.stage1)
+        h = self._forward_stage(h, t_emb, self.stage2)
+        h = self._forward_stage(h, t_emb, self.stage3)
+        h = self._forward_stage(h, t_emb, self.stage4)
+
+        h = self.final_norm(h)
+        h = self.final_act(h)
+        h = self.pool(h)
+        h = torch.flatten(h, start_dim=1)
+
+        logits = self.head(h)
 
         return logits
 
     def _init_weights(self) -> None:
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
+        for module in self.modules():
+            if isinstance(module, nn.Conv2d):
+                nn.init.kaiming_normal_(
+                    module.weight,
+                    mode="fan_out",
+                    nonlinearity="relu",
+                )
 
-            elif isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
+            elif isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
 
 
 def build_classifier_from_config(cfg: dict) -> NoisyImageClassifier:
@@ -225,8 +347,9 @@ def build_classifier_from_config(cfg: dict) -> NoisyImageClassifier:
         num_classes=int(model_cfg.get("num_classes", 10)),
         base_channels=int(model_cfg.get("base_channels", 64)),
         time_embedding_dim=int(model_cfg.get("time_embedding_dim", 128)),
-        dropout=float(model_cfg.get("dropout", 0.1)),
+        dropout=float(model_cfg.get("dropout", 0.0)),
         activation=str(model_cfg.get("activation", "silu")),
+        blocks_per_stage=int(model_cfg.get("blocks_per_stage", 2)),
     )
 
 
@@ -237,8 +360,9 @@ if __name__ == "__main__":
         num_classes=10,
         base_channels=64,
         time_embedding_dim=128,
-        dropout=0.1,
+        dropout=0.0,
         activation="silu",
+        blocks_per_stage=2,
     ).to(device)
 
     batch_size = 8
