@@ -15,11 +15,11 @@ diffusion:
 
 model:
   num_classes: 10
-  base_channels: 96
-  time_embedding_dim: 128
-  dropout: 0.0
-  activation: "silu"
-  blocks_per_stage: 4
+  base_channels: 128
+  time_embedding_dim: 256
+  dropout: 0.2
+  activation: "gelu"
+  blocks_per_stage: 5
 
 training:
   epochs: 50
@@ -31,4 +31,4 @@ training:
 
 checkpoint:
   dir: "checkpoints"
-  filename: "classifier_cifar10_resnet642.pt"
+  filename: "classifier_cifar10_resnet128.pt"

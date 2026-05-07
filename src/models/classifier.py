@@ -105,6 +105,7 @@ class TimeConditionedResidualBlock(nn.Module):
         )
 
         self.time_proj = nn.Linear(time_embedding_dim, out_channels)
+        self.time_proj2 = nn.Linear(time_embedding_dim, out_channels)
 
         self.norm2 = make_group_norm(out_channels)
         self.act2 = act_layer()
@@ -141,6 +142,7 @@ class TimeConditionedResidualBlock(nn.Module):
         h = h + time_bias[:, :, None, None]
 
         h = self.norm2(h)
+        h = h + self.time_proj2(t_emb)[:, :, None, None]
         h = self.act2(h)
         h = self.dropout(h)
         h = self.conv2(h)
@@ -235,8 +237,18 @@ class NoisyImageClassifier(nn.Module):
             activation=activation,
         )
 
+        self.stage5 = self._make_stage(
+            in_channels=4 * c,
+            out_channels=4 * c,
+            time_embedding_dim=time_embedding_dim,
+            blocks=blocks_per_stage,
+            first_stride=2,
+            dropout=dropout,
+            activation=activation,
+        )
+
         self.final_norm = make_group_norm(4 * c)
-        self.final_act = nn.SiLU()
+        self.final_act = nn.GELU()
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
 
         self.head = nn.Linear(4 * c, num_classes)
@@ -315,6 +327,7 @@ class NoisyImageClassifier(nn.Module):
         h = self._forward_stage(h, t_emb, self.stage2)
         h = self._forward_stage(h, t_emb, self.stage3)
         h = self._forward_stage(h, t_emb, self.stage4)
+        h = self._forward_stage(h, t_emb, self.stage5)
 
         h = self.final_norm(h)
         h = self.final_act(h)
