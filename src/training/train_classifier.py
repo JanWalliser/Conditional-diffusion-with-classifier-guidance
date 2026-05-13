@@ -11,6 +11,8 @@ import torch.nn.functional as F
 import yaml
 from tqdm import tqdm
 
+
+
 from src.data.cifar10 import get_cifar10_loaders
 from src.diffusion.schedule import build_schedule_from_config
 from src.models.classifier import build_classifier_from_config
@@ -304,7 +306,7 @@ def main() -> None:
 
     use_amp = bool(train_cfg.get("amp", True)) and device.type == "cuda"
 
-    scaler = torch.amp.GradScaler(
+    scaler = torch.amp.GradScaler(#Hier könnte amn ein MLP einbauen als gradienten scaler oder so beim Diff modell
         device.type,
         enabled=use_amp,
     )
@@ -420,3 +422,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

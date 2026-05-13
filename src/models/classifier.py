@@ -6,6 +6,8 @@ from typing import Literal
 import torch
 import torch.nn as nn
 
+from src.models.unet_classifier import NoisyUNetClassifier
+
 
 class SinusoidalTimeEmbedding(nn.Module):
     """
@@ -355,15 +357,33 @@ class NoisyImageClassifier(nn.Module):
 
 def build_classifier_from_config(cfg: dict) -> NoisyImageClassifier:
     model_cfg = cfg.get("model", {})
+    name = model_cfg.get("name", "resnet").lower()
 
-    return NoisyImageClassifier(
-        num_classes=int(model_cfg.get("num_classes", 10)),
-        base_channels=int(model_cfg.get("base_channels", 64)),
-        time_embedding_dim=int(model_cfg.get("time_embedding_dim", 128)),
-        dropout=float(model_cfg.get("dropout", 0.0)),
-        activation=str(model_cfg.get("activation", "silu")),
-        blocks_per_stage=int(model_cfg.get("blocks_per_stage", 2)),
-    )
+    if name in {"resnet"}:
+        return NoisyImageClassifier(
+            num_classes=cfg.get("num_classes", 10),
+            base_channels=cfg.get("base_channels", 64),
+            time_embedding_dim=cfg.get("time_embedding_dim", 128),
+            dropout=cfg.get("dropout", 0.0),
+            activation=cfg.get("activation", "gelu"),
+            blocks_per_stage=cfg.get("blocks_per_stage", 2),
+        )
+
+    if name in {"unet"}:
+        return NoisyUNetClassifier(
+            in_channels=cfg.get("in_channels", 3),
+            num_classes=cfg.get("num_classes", 10),
+            input_size=cfg.get("input_size", 32),
+            base_channels=cfg.get("base_channels", 96),
+            time_embedding_dim=cfg.get("time_embedding_dim", 384),
+            channel_mults=tuple(cfg.get("channel_mults", [1, 2, 4])),
+            blocks_per_stage=cfg.get("blocks_per_stage", 2),
+            dropout=cfg.get("dropout", 0.1),
+            attention_resolutions=tuple(cfg.get("attention_resolutions", [8])),
+            channels_per_head=cfg.get("channels_per_head", 64),
+        )
+     
+
 
 
 if __name__ == "__main__":
@@ -374,7 +394,7 @@ if __name__ == "__main__":
         base_channels=64,
         time_embedding_dim=128,
         dropout=0.0,
-        activation="silu",
+        activation="gelu",
         blocks_per_stage=2,
     ).to(device)
 

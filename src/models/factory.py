@@ -1,0 +1,38 @@
+from __future__ import annotations
+
+from typing import Any
+
+import torch.nn as nn
+
+from src.models.classifier import NoisyImageClassifier
+from src.models.unet_classifier import NoisyUNetClassifier
+
+
+def build_classifier(model_cfg: dict[str, Any]) -> nn.Module:
+    name = model_cfg.get("name", "noisy_classifier").lower()
+
+    if name in {"resnet"}:
+        return NoisyImageClassifier(
+            num_classes=model_cfg.get("num_classes", 10),
+            base_channels=model_cfg.get("base_channels", 64),
+            time_embedding_dim=model_cfg.get("time_embedding_dim", 128),
+            dropout=model_cfg.get("dropout", 0.0),
+            activation=model_cfg.get("activation", "silu"),
+            blocks_per_stage=model_cfg.get("blocks_per_stage", 2),
+        )
+
+    if name in {"unet"}:
+        return NoisyUNetClassifier(
+            in_channels=model_cfg.get("in_channels", 3),
+            num_classes=model_cfg.get("num_classes", 10),
+            input_size=model_cfg.get("input_size", 32),
+            base_channels=model_cfg.get("base_channels", 96),
+            time_embedding_dim=model_cfg.get("time_embedding_dim", 384),
+            channel_mults=tuple(model_cfg.get("channel_mults", [1, 2, 4])),
+            blocks_per_stage=model_cfg.get("blocks_per_stage", 2),
+            dropout=model_cfg.get("dropout", 0.1),
+            attention_resolutions=tuple(model_cfg.get("attention_resolutions", [8])),
+            channels_per_head=model_cfg.get("channels_per_head", 64),
+        )
+
+    raise ValueError(f"Unknown classifier model name: {name}")
