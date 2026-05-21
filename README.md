@@ -1,211 +1,291 @@
 # Conditional Diffusion with Classifier Guidance
 
-This project trains a DDPM diffusion model on CIFAR-10 and uses an optional noisy-image classifier for classifier guidance during sampling.
+Dieses Projekt trainiert ein DDPM-Diffusionsmodell auf CIFAR-10 und nutzt optional einen separaten Noisy-Image-Classifier für Classifier Guidance beim Sampling.
 
-The model setup is based on the usual DDPM pipeline:
+Das Projekt besteht aktuell aus drei Hauptteilen:
 
-```text
-clean image x_0
-      ↓ forward noising
-noisy image x_t
-      ↓ denoising U-Net
-predicted noise epsilon_pred
-```
-
-During sampling, the model starts from pure Gaussian noise and denoises it step by step until an image is produced.
-
----
-
-## Project structure
-
-```text
-configs/
-  classifier_cifar10.yaml        Classifier training config
-  ddpm_cifar10.yaml              DDPM training config
-  ddpm_cifar10_finetune.yaml     Optional DDPM finetuning config
-  guidance_sweep.yaml            Optional guidance sweep config
-
-src/
-  data/
-    cifar10.py                   CIFAR-10 dataloaders
-
-  diffusion/
-    schedule.py                  Diffusion noise schedule
-    ddpm.py                      DDPM training and reverse-step math
-    sampler.py                   DDPM image sampler with optional classifier guidance
-
-  models/
-    unet.py                      Denoising U-Net for DDPM
-    classifier.py                Noisy-image classifier
-    unet_classifier.py           U-Net-style classifier used for guidance
-
-  training/
-    train_classifier.py          Train noisy-image classifier
-    train_ddpm.py                Train DDPM model
-
-  sampling/
-    sample_guided.py             Generate unguided/guided samples
-```
+1. Training eines Classifiers auf verrauschten CIFAR-10-Bildern
+2. Training eines DDPM-Denoising-U-Nets
+3. Sampling von Bildern mit oder ohne Classifier Guidance
 
 ---
 
 ## Setup
 
-Run all commands from the project root.
-
-### 1. Create a virtual environment
-
-#### Windows PowerShell
+Virtuelle Umgebung erstellen:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\activate
 ```
 
-If PowerShell blocks activation:
+Dependencies installieren:
 
 ```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\.venv\Scripts\activate
-```
-
-#### Linux / macOS
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
----
-
-### 2. Install dependencies
-
-```bash
 pip install -r requirements.txt
 ```
 
-For CUDA training, make sure the installed PyTorch version matches the local CUDA/GPU setup.
-
-Check CUDA inside Python:
-
-```bash
-python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU only')"
-```
+Die Python-Befehle werden aus dem Projekt-Root ausgeführt, also aus dem Ordner, in dem `src/`, `configs/` und `requirements.txt` liegen.
 
 ---
 
-## Data
-
-CIFAR-10 is downloaded automatically if the config contains:
-
-```yaml
-data:
-  download: true
-```
-
-The data is stored under the configured data root, usually:
+## Projektstruktur
 
 ```text
-data/
-```
+configs/
+  classifier_cifar10.yaml
+  ddpm_cifar10.yaml
+  ddpm_cifar10_finetune.yaml
+  guidance_sweep.yaml
 
-Do not commit downloaded datasets, checkpoints, logs, or generated samples.
+src/
+  data/
+    cifar10.py
 
-Recommended `.gitignore` entries:
+  diffusion/
+    schedule.py
+    ddpm.py
+    sampler.py
 
-```gitignore
-data/
-checkpoints/
-outputs/
-logs/
-wandb/
-__pycache__/
-*.pt
-*.pth
-*.tar.gz
+  models/
+    classifier.py
+    unet.py
+    unet_classifier.py
+
+  training/
+    train_classifier.py
+    train_ddpm.py
+
+  sampling/
+    sample_guided.py
 ```
 
 ---
 
-## Train the noisy-image classifier
+## Dateien im Projekt
 
-The classifier is trained on noisy CIFAR-10 images. It receives both the noisy image `x_t` and the diffusion timestep `t`.
+### `src/data/cifar10.py`
+
+Erstellt die CIFAR-10-DataLoader für Training und Validation.
+
+Die Bilder werden auf den Bereich `[-1, 1]` normalisiert, damit sie direkt für DDPM-Training verwendet werden können.
+
+Wichtige Funktion:
+
+```python
+get_cifar10_loaders(...)
+```
+
+Diese Funktion gibt zwei Loader zurück:
+
+```python
+loaders.train
+loaders.val
+```
+
+---
+
+### `src/diffusion/schedule.py`
+
+Definiert den Diffusion-Noise-Schedule.
+
+Der Schedule enthält unter anderem:
+
+- `betas`
+- `alphas`
+- `alpha_bars`
+- `sqrt_alpha_bars`
+- `sqrt_one_minus_alpha_bars`
+
+Außerdem enthält die Datei die Funktion:
+
+```python
+q_sample(x_0, t, noise)
+```
+
+Diese erzeugt aus einem sauberen Bild `x_0` ein verrauschtes Bild `x_t`.
+
+---
+
+### `src/diffusion/ddpm.py`
+
+Enthält den DDPM-Wrapper um das Denoising-U-Net.
+
+Die Datei übernimmt:
+
+- Forward-Noising
+- Training-Loss
+- Vorhersage von `x_0` aus vorhergesagtem Noise
+- Berechnung von Mean und Variance für Reverse-Diffusion-Schritte
+
+Wichtige Klasse:
+
+```python
+DDPM
+```
+
+Wichtige Funktionen:
+
+```python
+q_sample(...)
+training_loss(...)
+p_mean_variance(...)
+predict_x0_from_eps(...)
+```
+
+---
+
+### `src/diffusion/sampler.py`
+
+Enthält den DDPM-Sampler für die Bilderzeugung.
+
+Die Datei startet mit normalverteiltem Rauschen und führt die Reverse-Diffusion-Schritte aus, bis ein Bild entsteht.
+
+Optional kann ein Classifier für Classifier Guidance verwendet werden.
+
+Wichtige Klasse:
+
+```python
+DDPMSampler
+```
+
+Wichtige Funktionen:
+
+```python
+sample(...)
+p_sample(...)
+classifier_gradient(...)
+```
+
+---
+
+### `src/models/unet.py`
+
+Enthält das Denoising-U-Net für das DDPM-Modell.
+
+Das Modell bekommt:
+
+```text
+x_t, t
+```
+
+und sagt das hinzugefügte Rauschen vorher:
+
+```text
+epsilon_pred
+```
+
+Wichtige Klasse:
+
+```python
+DenoisingUNet
+```
+
+Wichtige Bausteine:
+
+- Residual Blocks
+- Timestep Embeddings
+- Attention Blocks
+- Encoder/Decoder mit Skip Connections
+
+---
+
+### `src/models/classifier.py`
+
+Enthält den einfachen Noisy-Image-Classifier.
+
+Der Classifier bekommt ein verrauschtes Bild `x_t` und den Timestep `t` und gibt CIFAR-10-Klassenlogits zurück.
+
+Wichtige Klasse:
+
+```python
+NoisyImageClassifier
+```
+
+Wichtige Funktion:
+
+```python
+build_classifier_from_config(...)
+```
+
+---
+
+### `src/models/unet_classifier.py`
+
+Enthält den U-Net-artigen Classifier für Noisy-Image-Classification.
+
+Diese Variante ist näher an der Architekturidee aus Classifier Guidance: Der Classifier arbeitet direkt auf verrauschten Bildern und nutzt Timestep Conditioning.
+
+Wichtige Klasse:
+
+```python
+NoisyUNetClassifier
+```
+
+---
+
+### `src/training/train_classifier.py`
+
+Trainiert den Noisy-Image-Classifier.
+
+Ablauf:
+
+1. CIFAR-10 laden
+2. zufällige Timesteps sampeln
+3. Bilder verrauschen
+4. Classifier trainieren, die richtige CIFAR-10-Klasse vorherzusagen
+5. Validation Accuracy berechnen
+6. Checkpoints speichern
+
+Startbefehl:
 
 ```powershell
 python -m src.training.train_classifier --config configs/classifier_cifar10.yaml
 ```
 
-Expected output:
+Resume von einem Checkpoint:
 
-```text
-checkpoints/classifier_cifar10.pt
+```powershell
+python -m src.training.train_classifier --config configs/classifier_cifar10.yaml --resume checkpoints/last_classifier_cifar10.pt
 ```
-
-The classifier is later used during sampling to push generated images toward a target CIFAR-10 class.
 
 ---
 
-## Train the DDPM model
+### `src/training/train_ddpm.py`
 
-The DDPM model learns to predict the noise added to an image:
+Trainiert das eigentliche DDPM-Diffusionsmodell.
 
-```text
-model(x_t, t) -> epsilon_pred
-```
+Ablauf:
 
-Start training with:
+1. CIFAR-10 laden
+2. zufällige Timesteps sampeln
+3. Bilder verrauschen
+4. U-Net sagt das hinzugefügte Rauschen vorher
+5. Loss ist MSE zwischen vorhergesagtem Noise und echtem Noise
+6. Validation Loss berechnen
+7. Checkpoints, Logs und Sample-Grids speichern
+
+Startbefehl:
 
 ```powershell
 python -m src.training.train_ddpm --config configs/ddpm_cifar10.yaml
 ```
 
-Expected output:
-
-```text
-checkpoints/ddpm_cifar10.pt
-```
-
-The training script also writes logs, CSV metrics, checkpoints, and fixed sample grids depending on the config.
-
-Typical output folders:
-
-```text
-checkpoints/
-logs/
-outputs/ddpm_samples/
-```
-
----
-
-## Resume DDPM training
-
-Use the latest checkpoint, for example:
+Resume von einem Checkpoint:
 
 ```powershell
 python -m src.training.train_ddpm --config configs/ddpm_cifar10.yaml --resume checkpoints/last_ddpm_cifar10.pt
 ```
 
-Use the actual checkpoint name from the config if it differs.
-
 ---
 
-## Generate samples
+### `src/sampling/sample_guided.py`
 
-Use `sample_guided.py` to generate images with different classifier guidance scales.
+Erzeugt Bilder mit dem trainierten DDPM-Modell.
 
-### Unguided sampling only
+Optional wird ein Classifier geladen, um Classifier Guidance zu verwenden.
 
-```powershell
-python -m src.sampling.sample_guided `
-  --ddpm-checkpoint checkpoints/ddpm_cifar10.pt `
-  --ddpm-config configs/ddpm_cifar10.yaml `
-  --class-labels all `
-  --guidance-scales 0 `
-  --num-images 9 `
-  --clip-denoised
-```
-
-### Classifier-guided sampling
+Startbefehl mit Classifier Guidance:
 
 ```powershell
 python -m src.sampling.sample_guided `
@@ -219,27 +299,211 @@ python -m src.sampling.sample_guided `
   --clip-denoised
 ```
 
-Generated images are saved under:
+Startbefehl ohne Classifier:
+
+```powershell
+python -m src.sampling.sample_guided `
+  --ddpm-checkpoint checkpoints/ddpm_cifar10.pt `
+  --ddpm-config configs/ddpm_cifar10.yaml `
+  --class-labels all `
+  --guidance-scales 0 `
+  --num-images 9 `
+  --clip-denoised
+```
+
+Die erzeugten Bilder werden standardmäßig gespeichert unter:
 
 ```text
 outputs/guided_samples/
 ```
 
-Guidance scale interpretation:
+---
 
-```text
-0 = no classifier guidance
-1 = weak guidance
-2 = medium guidance
-4 = strong guidance
-8 = very strong guidance
+## Config-Dateien
+
+### `configs/classifier_cifar10.yaml`
+
+Config für das Classifier-Training.
+
+Typische Bereiche:
+
+```yaml
+seed:
+data:
+diffusion:
+model:
+training:
+checkpoint:
 ```
 
-Higher guidance usually improves class consistency, but it can reduce diversity or make samples look overforced.
+Bedeutung:
+
+- `seed`: Zufallsseed für reproduzierbare Runs
+- `data`: CIFAR-10-Pfad, Batch Size, Worker, Validation Split
+- `diffusion`: Noise-Schedule für das Verrauschen der Bilder
+- `model`: Architektur des Classifiers
+- `training`: Epochs, Learning Rate, Weight Decay, AMP, Gradient Clipping
+- `checkpoint`: Speicherort und Dateiname des Classifier-Checkpoints
+
+Start:
+
+```powershell
+python -m src.training.train_classifier --config configs/classifier_cifar10.yaml
+```
 
 ---
 
-## CIFAR-10 class labels
+### `configs/ddpm_cifar10.yaml`
+
+Config für das normale DDPM-Training.
+
+Typische Bereiche:
+
+```yaml
+seed:
+data:
+diffusion:
+model:
+training:
+checkpoint:
+logging:
+sampling:
+samples:
+```
+
+Bedeutung:
+
+- `seed`: Zufallsseed
+- `data`: CIFAR-10-Daten und Batch Size
+- `diffusion`: Anzahl Timesteps und Beta-Schedule
+- `model`: U-Net-Konfiguration
+- `training`: Optimizer- und Trainingsparameter
+- `checkpoint`: Speicherort für Checkpoints
+- `logging`: Logdatei und CSV-Metriken
+- `sampling`: feste Sample-Erzeugung während des Trainings
+- `samples`: Ausgabeordner für Sample-Bilder
+
+Start:
+
+```powershell
+python -m src.training.train_ddpm --config configs/ddpm_cifar10.yaml
+```
+
+---
+
+### `configs/ddpm_cifar10_finetune.yaml`
+
+Config für weiteres Training oder Finetuning eines DDPM-Modells.
+
+Start mit Resume:
+
+```powershell
+python -m src.training.train_ddpm --config configs/ddpm_cifar10_finetune.yaml --resume checkpoints/last_ddpm_cifar10.pt
+```
+
+---
+
+### `configs/guidance_sweep.yaml`
+
+Config für Experimente mit mehreren Guidance Scales.
+
+Diese Datei beschreibt normalerweise, welche Klassen, Seeds und Guidance-Skalen beim Sampling getestet werden sollen.
+
+Der direkte Sampling-Befehl läuft über:
+
+```powershell
+python -m src.sampling.sample_guided ...
+```
+
+---
+
+## Typischer Ablauf auf einem neuen Rechner
+
+### 1. Repository klonen
+
+```powershell
+git clone <repository-url>
+cd <projektordner>
+```
+
+### 2. Virtuelle Umgebung erstellen
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+```
+
+### 3. Dependencies installieren
+
+```powershell
+pip install -r requirements.txt
+```
+
+### 4. Classifier trainieren
+
+```powershell
+python -m src.training.train_classifier --config configs/classifier_cifar10.yaml
+```
+
+### 5. DDPM trainieren
+
+```powershell
+python -m src.training.train_ddpm --config configs/ddpm_cifar10.yaml
+```
+
+### 6. Samples erzeugen
+
+```powershell
+python -m src.sampling.sample_guided `
+  --ddpm-checkpoint checkpoints/ddpm_cifar10.pt `
+  --ddpm-config configs/ddpm_cifar10.yaml `
+  --classifier-checkpoint checkpoints/classifier_cifar10.pt `
+  --classifier-config configs/classifier_cifar10.yaml `
+  --class-labels all `
+  --guidance-scales 0,1,2,4 `
+  --num-images 9 `
+  --clip-denoised
+```
+
+---
+
+## Outputs
+
+Während Training und Sampling entstehen typischerweise diese Ordner:
+
+```text
+checkpoints/
+logs/
+outputs/
+data/
+```
+
+### `checkpoints/`
+
+Enthält gespeicherte Modelle, z. B.:
+
+```text
+classifier_cifar10.pt
+ddpm_cifar10.pt
+last_ddpm_cifar10.pt
+best_ddpm_cifar10.pt
+```
+
+### `logs/`
+
+Enthält Trainingslogs und CSV-Metriken.
+
+### `outputs/`
+
+Enthält generierte Sample-Bilder und Vergleichsgrids.
+
+### `data/`
+
+Enthält CIFAR-10 nach dem Download.
+
+---
+
+## CIFAR-10 Klassen
 
 ```text
 0 airplane
@@ -254,130 +518,37 @@ Higher guidance usually improves class consistency, but it can reduce diversity 
 9 truck
 ```
 
-Example: generate only cats, dogs, and ships:
+Beim Sampling können Klassen einzeln oder zusammen ausgewählt werden:
 
 ```powershell
-python -m src.sampling.sample_guided `
-  --ddpm-checkpoint checkpoints/ddpm_cifar10.pt `
-  --ddpm-config configs/ddpm_cifar10.yaml `
-  --classifier-checkpoint checkpoints/classifier_cifar10.pt `
-  --classifier-config configs/classifier_cifar10.yaml `
-  --class-labels 3,5,8 `
-  --guidance-scales 0,2,4 `
-  --num-images 9 `
-  --clip-denoised
+--class-labels 0,1,3,5,8
 ```
 
----
-
-## Typical full workflow
+oder:
 
 ```powershell
-# 1. Install dependencies
-pip install -r requirements.txt
-
-# 2. Train classifier
-python -m src.training.train_classifier --config configs/classifier_cifar10.yaml
-
-# 3. Train DDPM
-python -m src.training.train_ddpm --config configs/ddpm_cifar10.yaml
-
-# 4. Generate guided samples
-python -m src.sampling.sample_guided `
-  --ddpm-checkpoint checkpoints/ddpm_cifar10.pt `
-  --ddpm-config configs/ddpm_cifar10.yaml `
-  --classifier-checkpoint checkpoints/classifier_cifar10.pt `
-  --classifier-config configs/classifier_cifar10.yaml `
-  --class-labels all `
-  --guidance-scales 0,1,2,4 `
-  --num-images 9 `
-  --clip-denoised
+--class-labels all
 ```
 
 ---
 
-## Notes about timesteps and sampling speed
+## Guidance Scales
 
-The current sampler is a standard DDPM sampler.
+Beim Sampling legt `--guidance-scales` fest, welche Classifier-Guidance-Stärken getestet werden.
 
-If the model was trained with:
-
-```yaml
-diffusion:
-  timesteps: 1000
-```
-
-then the default sampler also uses 1000 reverse steps:
-
-```text
-x_999 -> x_998 -> ... -> x_0
-```
-
-Do not simply change the sampling loop from 1000 steps to 50 steps. The current DDPM sampler is built for neighbouring transitions:
-
-```text
-x_t -> x_{t-1}
-```
-
-For faster sampling with around 50 steps, add a separate DDIM sampler or solver-based sampler.
-
----
-
-## Troubleshooting
-
-### `ModuleNotFoundError: No module named 'src'`
-
-Run commands from the project root and use the `-m` syntax:
+Beispiel:
 
 ```powershell
-python -m src.training.train_ddpm --config configs/ddpm_cifar10.yaml
+--guidance-scales 0,1,2,4
 ```
 
-Do not run files directly from inside `src/`.
-
----
-
-### CUDA is not used
-
-Check whether PyTorch can see the GPU:
-
-```bash
-python -c "import torch; print(torch.cuda.is_available())"
-```
-
-If this prints `False`, install a CUDA-enabled PyTorch build.
-
----
-
-### Checkpoint not found
-
-Check the configured checkpoint name in the YAML file:
-
-```yaml
-checkpoint:
-  dir: checkpoints
-  filename: ddpm_cifar10.pt
-```
-
-Then make sure the file exists under that directory.
-
----
-
-### Generated images look bad early in training
-
-That is expected. DDPM samples usually look like noise or weak blobs in early epochs. Use the fixed sample grids over epochs to compare progress fairly.
-
----
-
-## Git note
-
-Do not commit:
+Dabei bedeutet:
 
 ```text
-data/
-checkpoints/
-outputs/
-logs/
+0   ohne Guidance
+1   schwache Guidance
+2   mittlere Guidance
+4   stärkere Guidance
 ```
 
-These folders can become large and should be regenerated locally.
+Für jede Klasse und jede Guidance Scale wird ein eigenes Grid gespeichert.
