@@ -28,8 +28,8 @@ model:
   channels_per_head: 64
 
 training:
-  epochs: 100
-  lr: 0.0002
+  epochs: 150
+  lr: 0.00005
   weight_decay: 0.0
   amp: true
   grad_clip: 1.0
@@ -40,22 +40,11 @@ training:
 
 checkpoint:
   dir: "checkpoints"
-  filename: "ddpm_cifar10_unet96.pt"
+  filename: "ddpm_cifar10_unet96_finetune_lr5e5.pt"
 
 samples:
-  dir: "outputs/ddpm_samples"
+  dir: "outputs/ddpm_samples_finetune"
   num_images: 64
   batch_size: 64
-
-
-
-sampling:
-  every_epochs: 1
-  num_samples: 9
-  out_dir: "outputs/ddpm_samples"
-  save_individual: true
-
-logging:
-  dir: "logs"
-  filename: "train_ddpm_cifar10.log"
-  csv_filename: "train_ddpm_cifar10_metrics.csv"
+  fixed_seed: 999
+  fixed_num_images: 9

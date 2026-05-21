@@ -16,11 +16,10 @@ from src.diffusion.schedule import build_schedule_from_config
 from src.models.classifier import build_classifier_from_config
 
 
-def load_config(config_path: str | Path) -> dict:
-    with open(config_path, "r") as f:
-        cfg = yaml.safe_load(f)
+def load_config(path: str | Path) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
-    return cfg
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -28,25 +27,22 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-
-    # For reproducibility in convolution operations
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
-def accuracy(logits: torch.Tensor, labels: torch.Tensor) -> float:
-    preds = torch.argmax(logits, dim=1)
-    correct = (preds == labels).sum().item()
-    total = labels.size(0)
-    return correct / total
 
-def make_checkpoints(
-        *,
-        model: torch.nn.Module,
-        optimizer: torch.optim.Optimizer,
-        epoch: int,
-        best_val_acc: float,
-        cfg: dict[str, Any],
-)-> dict[str, Any]:
+def accuracy(logits: torch.Tensor, labels: torch.Tensor) -> float:
+    preds = logits.argmax(dim=1)
+    return (preds == labels).float().mean().item()
+
+
+def make_checkpoint(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    best_val_acc: float,
+    cfg: dict[str, Any],
+) -> dict[str, Any]:
     return {
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
@@ -57,36 +53,35 @@ def make_checkpoints(
 
 
 def save_checkpoint(
-        checkpoint: dict[str, Any],
-        checkpoint_dir: str | Path,
-        filename: str,
+    checkpoint: dict[str, Any],
+    checkpoint_dir: str | Path,
+    filename: str,
 ) -> Path:
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    checkpoint_path = checkpoint_dir / filename
-    torch.save(checkpoint, checkpoint_path)
-
-    return checkpoint_path
+    path = checkpoint_dir / filename
+    torch.save(checkpoint, path)
+    return path
 
 
 def load_checkpoint(
     path: str | Path,
     model: torch.nn.Module,
-    optimizer: torch.optim.Optimizer | None = None,
-    device: torch.device | str = "cpu",
+    optimizer: torch.optim.Optimizer | None,
+    device: torch.device,
 ) -> tuple[int, float]:
-    path = Path(path)
     checkpoint = torch.load(path, map_location=device)
+
     model.load_state_dict(checkpoint["model_state_dict"])
-    if optimizer is not None:
+
+    if optimizer is not None and "optimizer_state_dict" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    epoch = checkpoint["epoch"]
-    best_val_acc = checkpoint["best_val_acc"]
-    return epoch, best_val_acc
+
+    return checkpoint.get("epoch", 0), checkpoint.get("best_val_acc", 0.0)
+
 
 def train_one_epoch(
-    *,
     model: torch.nn.Module,
     train_loader: torch.utils.data.DataLoader,
     schedule,
@@ -94,22 +89,18 @@ def train_one_epoch(
     scaler: torch.amp.GradScaler,
     device: torch.device,
     epoch: int,
-    num_epochs: int,
+    epochs: int,
     use_amp: bool,
     grad_clip: float | None,
     log_every: int,
 ) -> tuple[float, float]:
     model.train()
 
-    running_loss = 0.0
-    running_acc = 0.0
-    num_batches = 0
+    loss_sum = 0.0
+    acc_sum = 0.0
+    batches = 0
 
-    progress = tqdm(
-        train_loader,
-        desc=f"Train epoch {epoch}/{num_epochs}",
-        leave=False,
-    )
+    progress = tqdm(train_loader, desc=f"Train {epoch}/{epochs}", leave=False)
 
     for step, (x_0, labels) in enumerate(progress, start=1):
         x_0 = x_0.to(device, non_blocking=True)
@@ -123,10 +114,7 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
 
-        with torch.amp.autocast(
-            device_type=device.type,
-            enabled=use_amp,
-        ):
+        with torch.amp.autocast(device_type=device.type, enabled=use_amp):
             logits = model(x_t, t)
             loss = F.cross_entropy(logits, labels)
 
@@ -139,29 +127,21 @@ def train_one_epoch(
         scaler.step(optimizer)
         scaler.update()
 
-        batch_acc = accuracy(logits.detach(), labels)
-
-        running_loss += loss.item()
-        running_acc += batch_acc
-        num_batches += 1
+        loss_sum += loss.item()
+        acc_sum += accuracy(logits.detach(), labels)
+        batches += 1
 
         if step % log_every == 0:
             progress.set_postfix(
-                {
-                    "loss": f"{running_loss / num_batches:.4f}",
-                    "acc": f"{running_acc / num_batches:.4f}",
-                }
+                loss=f"{loss_sum / batches:.4f}",
+                acc=f"{acc_sum / batches:.4f}",
             )
 
-    avg_loss = running_loss / max(num_batches, 1)
-    avg_acc = running_acc / max(num_batches, 1)
-
-    return avg_loss, avg_acc
+    return loss_sum / max(batches, 1), acc_sum / max(batches, 1)
 
 
 @torch.no_grad()
 def validate(
-    *,
     model: torch.nn.Module,
     val_loader: torch.utils.data.DataLoader,
     schedule,
@@ -170,13 +150,11 @@ def validate(
 ) -> tuple[float, float, dict[str, float]]:
     model.eval()
 
-    total_loss = 0.0
-    total_correct = 0
-    total_examples = 0
-    num_batches = 0
+    loss_sum = 0.0
+    correct_sum = 0
+    example_sum = 0
+    batches = 0
 
-    # Timestep-bin accuracy. Useful because the classifier should be strong at
-    # low/mid noise and will naturally become weaker near pure noise.
     bin_edges = [
         0,
         int(0.1 * schedule.timesteps),
@@ -201,65 +179,50 @@ def validate(
         noise = torch.randn_like(x_0)
         x_t = schedule.q_sample(x_0=x_0, t=t, noise=noise)
 
-        with torch.amp.autocast(
-            device_type=device.type,
-            enabled=use_amp,
-        ):
+        with torch.amp.autocast(device_type=device.type, enabled=use_amp):
             logits = model(x_t, t)
             loss = F.cross_entropy(logits, labels)
 
         preds = logits.argmax(dim=1)
         correct = preds == labels
 
-        total_loss += loss.item()
-        total_correct += correct.sum().item()
-        total_examples += labels.numel()
-        num_batches += 1
+        loss_sum += loss.item()
+        correct_sum += correct.sum().item()
+        example_sum += labels.numel()
+        batches += 1
 
         for i in range(len(bin_edges) - 1):
             low = bin_edges[i]
             high = bin_edges[i + 1]
-
             mask = (t >= low) & (t < high)
 
             if mask.any():
                 bin_correct[i] += correct[mask].sum().item()
                 bin_total[i] += mask.sum().item()
 
-    avg_loss = total_loss / max(num_batches, 1)
-    avg_acc = total_correct / max(total_examples, 1)
+    avg_loss = loss_sum / max(batches, 1)
+    avg_acc = correct_sum / max(example_sum, 1)
 
     bin_acc = {}
     for i in range(len(bin_edges) - 1):
         low = bin_edges[i]
         high = bin_edges[i + 1]
-
         key = f"t[{low},{high})"
 
-        if bin_total[i] > 0:
-            bin_acc[key] = bin_correct[i] / bin_total[i]
-        else:
+        if bin_total[i] == 0:
             bin_acc[key] = float("nan")
+        else:
+            bin_acc[key] = bin_correct[i] / bin_total[i]
 
     return avg_loss, avg_acc, bin_acc
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Train noisy-image classifier for classifier-guided diffusion."
+        description="Train the noisy-image classifier for classifier guidance."
     )
-    parser.add_argument(
-        "--config",
-        type=str,
-        required=True,
-        help="Path to YAML config file.",
-    )
-    parser.add_argument(
-        "--resume",
-        type=str,
-        default=None,
-        help="Optional checkpoint path to resume from.",
-    )
+    parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--resume", type=str, default=None)
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -270,12 +233,12 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print("=" * 80)
-    print("C1 Noisy-Image Classifier Training")
+    print("C1 noisy-image classifier")
     print("=" * 80)
     print(f"Config: {args.config}")
     print(f"Device: {device}")
 
-    if torch.cuda.is_available():
+    if device.type == "cuda":
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"CUDA build: {torch.version.cuda}")
 
@@ -293,7 +256,6 @@ def main() -> None:
     )
 
     schedule = build_schedule_from_config(cfg, device=device)
-
     model = build_classifier_from_config(cfg).to(device)
 
     optimizer = torch.optim.AdamW(
@@ -303,11 +265,7 @@ def main() -> None:
     )
 
     use_amp = bool(train_cfg.get("amp", True)) and device.type == "cuda"
-
-    scaler = torch.amp.GradScaler(
-        device.type,
-        enabled=use_amp,
-    )
+    scaler = torch.amp.GradScaler(device.type, enabled=use_amp)
 
     grad_clip = train_cfg.get("grad_clip", 1.0)
     grad_clip = None if grad_clip is None else float(grad_clip)
@@ -330,8 +288,9 @@ def main() -> None:
             device=device,
         )
         start_epoch = loaded_epoch + 1
-        print(f"Resumed from {args.resume}")
-        print(f"Starting at epoch {start_epoch}")
+
+        print(f"Resumed from: {args.resume}")
+        print(f"Starting epoch: {start_epoch}")
         print(f"Best val acc so far: {best_val_acc:.4f}")
 
     num_params = sum(p.numel() for p in model.parameters())
@@ -341,7 +300,7 @@ def main() -> None:
     print(f"Train batches: {len(loaders.train)}")
     print(f"Val batches: {len(loaders.val)}")
     print(f"Timesteps: {schedule.timesteps}")
-    print(f"AMP enabled: {use_amp}")
+    print(f"AMP: {use_amp}")
     print("-" * 80)
 
     for epoch in range(start_epoch, epochs + 1):
@@ -353,7 +312,7 @@ def main() -> None:
             scaler=scaler,
             device=device,
             epoch=epoch,
-            num_epochs=epochs,
+            epochs=epochs,
             use_amp=use_amp,
             grad_clip=grad_clip,
             log_every=log_every,
@@ -375,7 +334,7 @@ def main() -> None:
         for key, value in bin_acc.items():
             print(f"    {key:14s}: {value:.4f}")
 
-        last_checkpoint = make_checkpoints(
+        last_checkpoint = make_checkpoint(
             model=model,
             optimizer=optimizer,
             epoch=epoch,
@@ -394,7 +353,7 @@ def main() -> None:
         if val_acc > best_val_acc:
             best_val_acc = val_acc
 
-            best_checkpoint = make_checkpoints(
+            best_checkpoint = make_checkpoint(
                 model=model,
                 optimizer=optimizer,
                 epoch=epoch,
