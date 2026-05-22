@@ -15,14 +15,13 @@ diffusion:
   sampling_strategy: "linear_decay"  # Options: "uniform", "linear_decay", "inverse_power", "exponential", "cosine"
 
 model:
-  name: "unet" #Alternative: "unet"
+  name: unet
   num_classes: 10
-  base_channels: 256
-  time_embedding_dim: 256
+  base_channels: 128
+  time_embedding_dim: 128
   dropout: 0.1
   activation: "gelu"
-  blocks_per_stage: 8
-  attention_resolutions: [16, 8]
+  blocks_per_stage: 4
 
 training:
   epochs: 100

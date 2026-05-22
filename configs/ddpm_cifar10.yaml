@@ -28,7 +28,7 @@ model:
   channels_per_head: 64
 
 training:
-  epochs: 100
+  epochs: 50
   lr: 0.0002
   weight_decay: 0.0
   amp: true
