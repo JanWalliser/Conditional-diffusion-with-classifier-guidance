@@ -19,7 +19,7 @@ model:
   num_classes: 10
   base_channels: 128
   time_embedding_dim: 128
-  dropout: 0.1
+  dropout: 0.2
   activation: "gelu"
   blocks_per_stage: 4
 
@@ -33,4 +33,4 @@ training:
 
 checkpoint:
   dir: "checkpoints"
-  filename: "classifier_cifar10_unet256LinearDecayLr3Res7.pt"
+  filename: "classifier_tester.pt"

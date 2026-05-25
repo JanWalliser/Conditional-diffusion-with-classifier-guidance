@@ -4,7 +4,9 @@ import argparse
 import random
 from pathlib import Path
 from typing import Any
-
+import math
+import csv
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -147,25 +149,28 @@ def validate(
     schedule,
     device: torch.device,
     use_amp: bool,
-) -> tuple[float, float, dict[str, float]]:
+    fixed_timesteps: list[int] | None = None,
+) -> tuple[float, float, dict[int, float]]:
     model.eval()
+
+    if fixed_timesteps is None:
+        fixed_timesteps = [1] + list(range(50, schedule.timesteps, 50))
+
+        last_timestep = schedule.timesteps - 1
+        if last_timestep not in fixed_timesteps:
+            fixed_timesteps.append(last_timestep)
+
+    fixed_timesteps = [
+        int(t) for t in fixed_timesteps
+        if 0 <= int(t) < schedule.timesteps
+    ]
 
     loss_sum = 0.0
     correct_sum = 0
     example_sum = 0
-    batches = 0
 
-    bin_edges = [
-        0,
-        int(0.1 * schedule.timesteps),
-        int(0.3 * schedule.timesteps),
-        int(0.6 * schedule.timesteps),
-        int(0.9 * schedule.timesteps),
-        schedule.timesteps,
-    ]
-
-    bin_correct = {i: 0 for i in range(len(bin_edges) - 1)}
-    bin_total = {i: 0 for i in range(len(bin_edges) - 1)}
+    timestep_correct = {t: 0 for t in fixed_timesteps}
+    timestep_total = {t: 0 for t in fixed_timesteps}
 
     progress = tqdm(val_loader, desc="Validate", leave=False)
 
@@ -175,46 +180,84 @@ def validate(
 
         batch_size = x_0.shape[0]
 
-        t = schedule.sample_timesteps(batch_size)
-        noise = torch.randn_like(x_0)
-        x_t = schedule.q_sample(x_0=x_0, t=t, noise=noise)
+        for timestep in fixed_timesteps:
+            t = torch.full(
+                size=(batch_size,),
+                fill_value=timestep,
+                device=device,
+                dtype=torch.long,
+            )
 
-        with torch.amp.autocast(device_type=device.type, enabled=use_amp):
-            logits = model(x_t, t)
-            loss = F.cross_entropy(logits, labels)
+            noise = torch.randn_like(x_0)
+            x_t = schedule.q_sample(x_0=x_0, t=t, noise=noise)
 
-        preds = logits.argmax(dim=1)
-        correct = preds == labels
+            with torch.amp.autocast(device_type=device.type, enabled=use_amp):
+                logits = model(x_t, t)
+                loss = F.cross_entropy(logits, labels)
 
-        loss_sum += loss.item()
-        correct_sum += correct.sum().item()
-        example_sum += labels.numel()
-        batches += 1
+            preds = logits.argmax(dim=1)
+            correct = preds == labels
 
-        for i in range(len(bin_edges) - 1):
-            low = bin_edges[i]
-            high = bin_edges[i + 1]
-            mask = (t >= low) & (t < high)
+            num_correct = correct.sum().item()
+            num_examples = labels.numel()
 
-            if mask.any():
-                bin_correct[i] += correct[mask].sum().item()
-                bin_total[i] += mask.sum().item()
+            loss_sum += loss.item() * num_examples
+            correct_sum += num_correct
+            example_sum += num_examples
 
-    avg_loss = loss_sum / max(batches, 1)
+            timestep_correct[timestep] += num_correct
+            timestep_total[timestep] += num_examples
+
+    avg_loss = loss_sum / max(example_sum, 1)
     avg_acc = correct_sum / max(example_sum, 1)
 
-    bin_acc = {}
-    for i in range(len(bin_edges) - 1):
-        low = bin_edges[i]
-        high = bin_edges[i + 1]
-        key = f"t[{low},{high})"
+    timestep_acc = {}
 
-        if bin_total[i] == 0:
-            bin_acc[key] = float("nan")
+    for timestep in fixed_timesteps:
+        total = timestep_total[timestep]
+
+        if total == 0:
+            timestep_acc[timestep] = float("nan")
         else:
-            bin_acc[key] = bin_correct[i] / bin_total[i]
+            timestep_acc[timestep] = timestep_correct[timestep] / total
 
-    return avg_loss, avg_acc, bin_acc
+    return avg_loss, avg_acc, timestep_acc
+
+
+
+
+
+
+
+def append_timestep_accuracy_csv(
+    csv_path: str | Path,
+    epoch: int,
+    timestep_acc: dict[int, float],
+) -> None:
+    csv_path = Path(csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    file_exists = csv_path.exists()
+
+    with csv_path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+
+        if not file_exists:
+            writer.writerow(["epoch", "timestep", "accuracy"])
+
+        for timestep, acc in sorted(timestep_acc.items()):
+            if isinstance(acc, float) and math.isnan(acc):
+                acc_value = "nan"
+            else:
+                acc_value = f"{acc:.6f}"
+
+            writer.writerow([epoch, timestep, acc_value])
+
+
+
+
+
+
 
 
 def main() -> None:
@@ -318,7 +361,7 @@ def main() -> None:
             log_every=log_every,
         )
 
-        val_loss, val_acc, bin_acc = validate(
+        val_loss, val_acc, timestep_acc = validate(
             model=model,
             val_loader=loaders.val,
             schedule=schedule,
@@ -330,9 +373,18 @@ def main() -> None:
         print(f"  train loss: {train_loss:.4f} | train acc: {train_acc:.4f}")
         print(f"  val   loss: {val_loss:.4f} | val   acc: {val_acc:.4f}")
 
-        print("  val acc by timestep bin:")
-        for key, value in bin_acc.items():
-            print(f"    {key:14s}: {value:.4f}")
+        print("  val acc by exact timestep:")
+        for timestep, acc in sorted(timestep_acc.items()):
+            if isinstance(acc, float) and math.isnan(acc):
+                print(f"    t={timestep:<4}: nan")
+            else:
+                print(f"    t={timestep:<4}: {acc:.4f}")
+
+        append_timestep_accuracy_csv(
+            csv_path="outputs/classifier_timestep_accuracy.csv",
+            epoch=epoch,
+            timestep_acc=timestep_acc,
+        )
 
         last_checkpoint = make_checkpoint(
             model=model,
