@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, Optional, Union
 
 import torch
@@ -8,6 +9,7 @@ import torch.nn.functional as F
 
 from src.diffusion.ddpm import DDPM
 
+num_timesteps = 1000
 
 class DDPMSampler:
     def __init__(
@@ -175,7 +177,7 @@ class DDPMSampler:
             mean = out["mean"]
             variance = out["variance"]
             log_variance = out["log_variance"]
-
+##################################################################################################################
         scale = self.guidance_scale if guidance_scale is None else float(guidance_scale)
 
         if self.classifier is not None and class_labels is not None and scale != 0.0:
@@ -184,6 +186,10 @@ class DDPMSampler:
                 t=t,
                 class_labels=class_labels,
             )
+
+            T = num_timesteps - 1
+            tau = float(timestep) / float(T)    
+            scale = scale * (math.sin(math.pi * tau))
 
             mean = mean + scale * variance * grad
 

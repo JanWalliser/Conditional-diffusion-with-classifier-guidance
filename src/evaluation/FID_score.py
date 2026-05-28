@@ -1,40 +1,85 @@
 import argparse
-import math
+import csv
 from pathlib import Path
-from typing import Optional, List
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
+from scipy.linalg import sqrtm
 from tqdm import tqdm
 from torchvision import datasets, transforms
 from torchvision.models import inception_v3, Inception_V3_Weights
 
-from scipy.linalg import sqrtm
-
 
 LABELS = {
-    0: 'airplane',
-    1: 'automobile',
-    2: 'bird',
-    3: 'cat',
-    4: 'deer',
-    5: 'dog',
-    6: 'frog',
-    7: 'horse',
-    8: 'ship',
-    9: 'truck'
+    0: "airplane",
+    1: "automobile",
+    2: "bird",
+    3: "cat",
+    4: "deer",
+    5: "dog",
+    6: "frog",
+    7: "horse",
+    8: "ship",
+    9: "truck",
 }
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+
+
+# -----------------------------------------------------------------------------
+# Loading images
+# -----------------------------------------------------------------------------
+
+def parse_int_list(value: str) -> List[int]:
+    return [int(x.strip()) for x in value.split(",") if x.strip()]
+
+
+def find_class_dir(root: Path, class_id: int) -> Optional[Path]:
+    class_name = LABELS[class_id]
+    candidates = [
+        root / str(class_id),
+        root / class_name,
+        root / f"class_{class_id}",
+        root / f"label_{class_id}",
+        root / f"{class_id}_{class_name}",
+        root / f"class_{class_id}_{class_name}",
+    ]
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+
+    return None
+
+
+def resolve_scale_dir(generated_root: Path, scale: int) -> Path:
+    candidates = [
+        generated_root / f"scale_{scale}",
+        generated_root / f"guidance_{scale}",
+        generated_root / f"guidance_scale_{scale}",
+        generated_root / f"s{scale}",
+        generated_root / str(scale),
+    ]
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+
+    raise FileNotFoundError(
+        "Could not find generated directory for guidance scale "
+        f"{scale}. Tried: {', '.join(str(p) for p in candidates)}"
+    )
 
 
 def load_images_from_directory(
     directory_path: str,
     class_id: Optional[int] = None,
     max_images: Optional[int] = None,
+    expected_size: tuple[int, int] = (32, 32),
 ) -> torch.Tensor:
     root = Path(directory_path)
 
@@ -42,84 +87,99 @@ def load_images_from_directory(
         raise FileNotFoundError(f"Directory does not exist: {root}")
 
     if class_id is None:
-        image_paths = [
-            p for p in root.rglob("*")
-            if p.suffix.lower() in IMAGE_EXTENSIONS
-        ]
+        search_roots = [root]
     else:
         class_name = LABELS[class_id]
-
         possible_dirs = [
             root / str(class_id),
             root / class_name,
             root / f"class_{class_id}",
             root / f"{class_id}_{class_name}",
         ]
-
         class_dirs = [p for p in possible_dirs if p.exists() and p.is_dir()]
 
         if class_dirs:
-            search_root = class_dirs[0]
-            image_paths = [
-                p for p in search_root.rglob("*")
-                if p.suffix.lower() in IMAGE_EXTENSIONS
-            ]
+            search_roots = [class_dirs[0]]
         else:
-            image_paths = [
-                p for p in root.rglob("*")
-                if p.suffix.lower() in IMAGE_EXTENSIONS
-                and (
-                    f"class_{class_id}" in p.name.lower()
-                    or f"label_{class_id}" in p.name.lower()
-                    or class_name in p.name.lower()
+            search_roots = [root]
+
+    image_paths = []
+    for search_root in search_roots:
+        for p in search_root.rglob("*"):
+            if p.suffix.lower() not in IMAGE_EXTENSIONS:
+                continue
+
+            name = p.name.lower()
+            if any(x in name for x in ["grid", "preview", "sample_grid", "overview"]):
+                continue
+
+            if class_id is not None:
+                class_name = LABELS[class_id]
+                parent_text = str(p.parent).lower()
+                file_text = p.name.lower()
+
+                matches_class = (
+                    f"class_{class_id}" in parent_text
+                    or f"class_{class_id}" in file_text
+                    or f"label_{class_id}" in file_text
+                    or f"{class_id}_{class_name}" in parent_text
+                    or class_name in parent_text
+                    or class_name in file_text
                 )
-            ]
+
+                if not class_dirs and not matches_class:
+                    continue
+
+            image_paths.append(p)
 
     image_paths = sorted(image_paths)
 
-    if max_images is not None:
-        image_paths = image_paths[:max_images]
-
-    if len(image_paths) == 0:
-        raise RuntimeError(f"No images found in {root} for class_id={class_id}")
-
     to_tensor = transforms.ToTensor()
     images: List[torch.Tensor] = []
+    skipped = 0
 
     for path in tqdm(image_paths, desc=f"Loading images from {root}"):
         img = Image.open(path).convert("RGB")
+
+        if img.size != expected_size:
+            skipped += 1
+            continue
+
         images.append(to_tensor(img))
+
+        if max_images is not None and len(images) >= max_images:
+            break
+
+    if len(images) == 0:
+        raise RuntimeError(
+            f"No valid {expected_size} images found in {root} for class_id={class_id}. "
+            f"Skipped {skipped} non-matching images."
+        )
+
+    if skipped > 0:
+        print(f"Skipped {skipped} non-{expected_size} images in {root}")
 
     return torch.stack(images, dim=0)
 
 
-######TODO
-def generate_images(
-    num_images: int,
-    class_id: Optional[int] = None,
-) -> torch.Tensor:
-    raise NotImplementedError(
-        "Use --generated-dir for now, or connect your sampler here."
-    )
-
-
 def load_cifar10_images(
     data_root: str,
-    split: str = "test",
+    split: str,
     class_id: Optional[int] = None,
     max_images: Optional[int] = None,
     download: bool = True,
 ) -> torch.Tensor:
-    train = split.lower() == "train"
+    if split not in {"train", "test"}:
+        raise ValueError("split must be 'train' or 'test'")
 
     dataset = datasets.CIFAR10(
         root=data_root,
-        train=train,
+        train=(split == "train"),
         download=download,
         transform=transforms.ToTensor(),
     )
 
-    images = []
+    images: List[torch.Tensor] = []
 
     for img, label in tqdm(dataset, desc=f"Loading CIFAR-10 {split}"):
         if class_id is not None and label != class_id:
@@ -131,16 +191,14 @@ def load_cifar10_images(
             break
 
     if len(images) == 0:
-        raise RuntimeError(f"No CIFAR-10 images found for class_id={class_id}")
+        raise RuntimeError(f"No CIFAR-10 images found for split={split}, class_id={class_id}")
 
     return torch.stack(images, dim=0)
 
 
-def calculate_statistics(features: np.ndarray):
-    mu = np.mean(features, axis=0)
-    sigma = np.cov(features, rowvar=False)
-    return mu, sigma
-
+# -----------------------------------------------------------------------------
+# FID
+# -----------------------------------------------------------------------------
 
 class InceptionFeatureExtractor(nn.Module):
     def __init__(self):
@@ -152,281 +210,217 @@ class InceptionFeatureExtractor(nn.Module):
         model.eval()
 
         self.model = model
-
-        self.register_buffer(
-            "mean",
-            torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1),
-        )
-        self.register_buffer(
-            "std",
-            torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1),
-        )
+        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = F.interpolate(
-            x,
-            size=(299, 299),
-            mode="bilinear",
-            align_corners=False,
-        )
-
+        x = F.interpolate(x, size=(299, 299), mode="bilinear", align_corners=False)
         x = (x - self.mean) / self.std
         return self.model(x)
 
 
 @torch.no_grad()
 def extract_inception_features(
+    extractor: InceptionFeatureExtractor,
     images: torch.Tensor,
     batch_size: int,
     device: torch.device,
 ) -> np.ndarray:
-    model = InceptionFeatureExtractor().to(device)
-    model.eval()
-
-    features = []
+    features: List[torch.Tensor] = []
 
     for i in tqdm(range(0, images.shape[0], batch_size), desc="Extracting features"):
         batch = images[i:i + batch_size].to(device)
-        feat = model(batch)
-        features.append(feat.cpu())
+        features.append(extractor(batch).cpu())
 
     return torch.cat(features, dim=0).numpy()
 
 
+def calculate_statistics(features: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    mu = np.mean(features, axis=0)
+    sigma = np.cov(features, rowvar=False)
+    return mu, sigma
+
 
 def calculate_fid_from_features(
-    real_features: np.ndarray,
-    generated_features: np.ndarray,
+    features_a: np.ndarray,
+    features_b: np.ndarray,
     eps: float = 1e-6,
 ) -> float:
-    mu_real, sigma_real = calculate_statistics(real_features)
-    mu_gen, sigma_gen = calculate_statistics(generated_features)
+    mu_a, sigma_a = calculate_statistics(features_a)
+    mu_b, sigma_b = calculate_statistics(features_b)
 
-    diff = mu_real - mu_gen
-
-    # sqrtm can be numerically unstable if covariance matrices are nearly singular
-    covmean = sqrtm(sigma_real @ sigma_gen)
+    diff = mu_a - mu_b
+    covmean = sqrtm(sigma_a @ sigma_b)
 
     if not np.isfinite(covmean).all():
-        print("FID calculation produced non-finite values. Adding epsilon to covariance diagonals.")
+        print("FID produced non-finite values. Adding epsilon to covariance diagonals.")
+        offset = np.eye(sigma_a.shape[0]) * eps
+        covmean = sqrtm((sigma_a + offset) @ (sigma_b + offset))
 
-        offset = np.eye(sigma_real.shape[0]) * eps
-        covmean = sqrtm((sigma_real + offset) @ (sigma_gen + offset))
-
-    # sqrtm can return tiny imaginary components because of numerical error
     if np.iscomplexobj(covmean):
         imaginary_part = np.max(np.abs(covmean.imag))
-
         if imaginary_part > 1e-3:
             raise ValueError(f"Large imaginary component in sqrtm: {imaginary_part}")
-
         covmean = covmean.real
 
-    fid = (
-        diff.dot(diff)
-        + np.trace(sigma_real)
-        + np.trace(sigma_gen)
-        - 2.0 * np.trace(covmean)
-    )
-
+    fid = diff.dot(diff) + np.trace(sigma_a) + np.trace(sigma_b) - 2.0 * np.trace(covmean)
     return float(fid)
 
 
+# -----------------------------------------------------------------------------
+# Evaluation modes
+# -----------------------------------------------------------------------------
 
-def calculate_classwise_fid_score(
-    real_images: torch.Tensor,
-    generated_images: torch.Tensor,
-    batch_size: int = 64,
-    device: str = "cuda",
-) -> float:
-    device = torch.device(device if torch.cuda.is_available() else "cpu")
-
-    real_features = extract_inception_features(real_images, batch_size, device)
-    generated_features = extract_inception_features(generated_images, batch_size, device)
-
-    return calculate_fid_from_features(real_features, generated_features)
-
-
-
-
-def calculate_global_fid_score(
-    real_images: torch.Tensor,
-    generated_images: torch.Tensor,
-    batch_size: int = 64,
-    device: str = "cuda",
-) -> float:
-    device = torch.device(device if torch.cuda.is_available() else "cpu")
-
-    real_features = extract_inception_features(real_images, batch_size, device)
-    generated_features = extract_inception_features(generated_images, batch_size, device)
-
-    return calculate_fid_from_features(real_features, generated_features)
+def get_features_cached(
+    cache: Dict[str, np.ndarray],
+    key: str,
+    images: torch.Tensor,
+    extractor: InceptionFeatureExtractor,
+    batch_size: int,
+    device: torch.device,
+) -> np.ndarray:
+    if key not in cache:
+        print(f"\nComputing features: {key} | images={tuple(images.shape)}")
+        cache[key] = extract_inception_features(extractor, images, batch_size, device)
+    return cache[key]
 
 
+def evaluate_matrix(args) -> List[Dict[str, object]]:
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    extractor = InceptionFeatureExtractor().to(device).eval()
+    feature_cache: Dict[str, np.ndarray] = {}
+    results: List[Dict[str, object]] = []
 
+    classes = parse_int_list(args.class_ids)
+    scales = parse_int_list(args.guidance_scales)
+    generated_root = Path(args.generated_root)
+
+    for class_id in classes:
+        class_name = LABELS[class_id]
+        print("\n" + "=" * 80)
+        print(f"Class {class_id}: {class_name}")
+        print("=" * 80)
+
+        train_images = load_cifar10_images(
+            data_root=args.data_root,
+            split="train",
+            class_id=class_id,
+            max_images=args.max_real,
+            download=True,
+        )
+        test_images = load_cifar10_images(
+            data_root=args.data_root,
+            split="test",
+            class_id=class_id,
+            max_images=args.max_real,
+            download=True,
+        )
+
+        train_features = get_features_cached(
+            feature_cache, f"cifar10_train_class_{class_id}", train_images,
+            extractor, args.batch_size, device,
+        )
+        test_features = get_features_cached(
+            feature_cache, f"cifar10_test_class_{class_id}", test_images,
+            extractor, args.batch_size, device,
+        )
+
+        train_test_fid = calculate_fid_from_features(train_features, test_features)
+        results.append({
+            "class_id": class_id,
+            "class_name": class_name,
+            "comparison": "train_vs_test",
+            "scale": "real",
+            "num_a": len(train_images),
+            "num_b": len(test_images),
+            "fid": train_test_fid,
+        })
+        print(f"FID train vs test [{class_id} - {class_name}]: {train_test_fid:.4f}")
+
+        for scale in scales:
+            scale_dir = resolve_scale_dir(generated_root, scale)
+            generated_images = load_images_from_directory(
+                directory_path=scale_dir,
+                class_id=class_id,
+                max_images=args.max_generated,
+            )
+            generated_features = get_features_cached(
+                feature_cache, f"generated_scale_{scale}_class_{class_id}", generated_images,
+                extractor, args.batch_size, device,
+            )
+
+            fid = calculate_fid_from_features(test_features, generated_features)
+            results.append({
+                "class_id": class_id,
+                "class_name": class_name,
+                "comparison": "test_vs_generated",
+                "scale": scale,
+                "num_a": len(test_images),
+                "num_b": len(generated_images),
+                "fid": fid,
+            })
+            print(f"FID test vs generated scale={scale} [{class_id} - {class_name}]: {fid:.4f}")
+
+    return results
+
+
+def print_results_table(results: List[Dict[str, object]]) -> None:
+    print("\n" + "=" * 80)
+    print("FID SUMMARY")
+    print("=" * 80)
+    print(f"{'class':<16} {'comparison':<20} {'scale':<8} {'num_a':>8} {'num_b':>8} {'FID':>12}")
+    print("-" * 80)
+
+    for row in results:
+        class_label = f"{row['class_id']}:{row['class_name']}"
+        print(
+            f"{class_label:<16} "
+            f"{row['comparison']:<20} "
+            f"{str(row['scale']):<8} "
+            f"{int(row['num_a']):>8} "
+            f"{int(row['num_b']):>8} "
+            f"{float(row['fid']):>12.4f}"
+        )
+
+
+def save_csv(results: List[Dict[str, object]], output_path: str | Path) -> None:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fieldnames = ["class_id", "class_name", "comparison", "scale", "num_a", "num_b", "fid"]
+    with output_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(results)
+
+    print(f"\nSaved CSV: {output_path}")
 
 
 def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--mode",
-        choices=["global", "class"],
-        required=True,
-        help="global = all classes, class = one selected CIFAR-10 class",
+        "--eval-mode",
+        choices=["matrix"],
+        default="matrix",
+        help="matrix = train/test sanity baseline plus test/generated FID per class and guidance scale.",
     )
-
-    parser.add_argument(
-        "--class-id",
-        type=int,
-        default=None,
-        help="CIFAR-10 class id, required for --mode class",
-    )
-
-    parser.add_argument(
-        "--real-source",
-        choices=["cifar10", "directory"],
-        default="cifar10",
-        help="Where real images come from.",
-    )
-
-    parser.add_argument(
-        "--data-root",
-        type=str,
-        default="data",
-        help="CIFAR-10 data root if --real-source cifar10.",
-    )
-
-    parser.add_argument(
-        "--real-dir",
-        type=str,
-        default=None,
-        help="Directory with real images if --real-source directory.",
-    )
-
-    parser.add_argument(
-        "--generated-dir",
-        type=str,
-        default=None,
-        help="Directory with generated images. If omitted, generate_images() is called.",
-    )
-
-    parser.add_argument(
-        "--split",
-        choices=["train", "test"],
-        default="test",
-        help="CIFAR-10 split for real images.",
-    )
-
-    parser.add_argument(
-        "--max-real",
-        type=int,
-        default=None,
-        help="Optional limit for real images.",
-    )
-
-    parser.add_argument(
-        "--max-generated",
-        type=int,
-        default=None,
-        help="Optional limit for generated images.",
-    )
-
-    parser.add_argument(
-        "--num-generate",
-        type=int,
-        default=1000,
-        help="Number of images to generate if --generated-dir is omitted.",
-    )
-
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=64,
-    )
-
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cuda",
-    )
+    parser.add_argument("--data-root", type=str, default="data")
+    parser.add_argument("--generated-root", type=str, required=True)
+    parser.add_argument("--class-ids", type=str, default="0,1,5,8")
+    parser.add_argument("--guidance-scales", type=str, default="0,5,10")
+    parser.add_argument("--max-real", type=int, default=None)
+    parser.add_argument("--max-generated", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--output-csv", type=str, default="outputs/fid_results.csv")
 
     args = parser.parse_args()
 
-    if args.mode == "class":
-        if args.class_id is None:
-            raise ValueError("--class-id is required when --mode class")
-
-        if not 0 <= args.class_id <= 9:
-            raise ValueError("--class-id must be between 0 and 9")
-
-        print(f"Mode: class-wise FID")
-        print(f"Class: {args.class_id} = {LABELS[args.class_id]}")
-    else:
-        print("Mode: global FID")
-
-    class_id = args.class_id if args.mode == "class" else None
-
-    # Load real images
-    if args.real_source == "cifar10":
-        real_images = load_cifar10_images(
-            data_root=args.data_root,
-            split=args.split,
-            class_id=class_id,
-            max_images=args.max_real,
-            download=True,
-        )
-    else:
-        if args.real_dir is None:
-            raise ValueError("--real-dir is required when --real-source directory")
-
-        real_images = load_images_from_directory(
-            directory_path=args.real_dir,
-            class_id=class_id,
-            max_images=args.max_real,
-        )
-
-    # Load or generate fake images
-    if args.generated_dir is not None:
-        generated_images = load_images_from_directory(
-            directory_path=args.generated_dir,
-            class_id=class_id,
-            max_images=args.max_generated,
-        )
-    else:
-        generated_images = generate_images(
-            num_images=args.num_generate,
-            class_id=class_id,
-        )
-
-    print(f"Real images:      {tuple(real_images.shape)}")
-    print(f"Generated images: {tuple(generated_images.shape)}")
-
-    if args.mode == "global":
-        fid = calculate_global_fid_score(
-            real_images=real_images,
-            generated_images=generated_images,
-            batch_size=args.batch_size,
-            device=args.device,
-        )
-    else:
-        fid = calculate_classwise_fid_score(
-            real_images=real_images,
-            generated_images=generated_images,
-            batch_size=args.batch_size,
-            device=args.device,
-        )
-
-    print("-" * 80)
-    if args.mode == "global":
-        print(f"Global FID: {fid:.4f}")
-    else:
-        print(
-            f"Class-wise FID "
-            f"[{args.class_id} - {LABELS[args.class_id]}]: {fid:.4f}"
-        )
-    print("-" * 80)
+    results = evaluate_matrix(args)
+    print_results_table(results)
+    save_csv(results, args.output_csv)
 
 
 if __name__ == "__main__":
