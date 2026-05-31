@@ -83,6 +83,141 @@ def load_checkpoint(
     return checkpoint.get("epoch", 0), checkpoint.get("best_val_acc", 0.0)
 
 
+def get_timestep_sampling_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """
+    Reads the classifier-training timestep sampling configuration.
+
+    Preferred config format:
+        timestep_sampling:
+          strategy: "sine"
+          power: 2.0
+          floor: 0.10
+
+    Backward-compatible format also supported:
+        diffusion:
+          sampling_strategy: "sine"
+          sampling_power: 2.0
+          sampling_floor: 0.10
+
+    Important: this does NOT change the DDPM beta/noise schedule.
+    It only changes how often each timestep is sampled while training
+    the noisy-image classifier.
+    """
+    explicit_cfg = cfg.get("timestep_sampling")
+
+    if explicit_cfg is not None:
+        return dict(explicit_cfg)
+
+    diffusion_cfg = cfg.get("diffusion", {})
+
+    return {
+        "strategy": diffusion_cfg.get("sampling_strategy", "uniform"),
+        "power": diffusion_cfg.get("sampling_power", 2.0),
+        "floor": diffusion_cfg.get("sampling_floor", 0.10),
+    }
+
+
+def build_timestep_sampling_probs(
+    num_timesteps: int,
+    sampling_cfg: dict[str, Any],
+    device: torch.device,
+) -> torch.Tensor | None:
+    """
+    Builds p(t) for classifier training.
+
+    Returns None for uniform sampling. For sine sampling, the probability mass
+    is concentrated in the medium-noise region and reduced at low/high noise:
+
+        w(t) = floor + sin(pi * (t + 0.5) / T) ** power
+
+    The floor keeps the extremes visible during training instead of removing
+    them completely.
+    """
+    strategy = str(
+        sampling_cfg.get("strategy", sampling_cfg.get("mode", "uniform"))
+    ).lower()
+
+    if strategy in {"uniform", "none", "off"}:
+        return None
+
+    t = torch.arange(num_timesteps, device=device, dtype=torch.float32)
+
+    if strategy in {"sine", "sin", "sinus", "shifted_sine", "mid_sine"}:
+        power = float(sampling_cfg.get("power", 2.0))
+        floor = float(sampling_cfg.get("floor", 0.10))
+
+        if power <= 0:
+            raise ValueError(f"timestep_sampling.power must be > 0, got {power}")
+
+        if floor < 0:
+            raise ValueError(f"timestep_sampling.floor must be >= 0, got {floor}")
+
+        x = (t + 0.5) / float(num_timesteps)
+        weights = torch.sin(torch.pi * x).clamp_min(0.0).pow(power)
+        weights = weights + floor
+
+    else:
+        raise ValueError(
+            f"Unknown timestep sampling strategy: {strategy}. "
+            "Supported strategies: uniform, sine."
+        )
+
+    if not torch.isfinite(weights).all():
+        raise ValueError("Timestep sampling weights contain non-finite values.")
+
+    weight_sum = weights.sum()
+
+    if weight_sum <= 0:
+        raise ValueError("Timestep sampling weights must sum to a positive value.")
+
+    return weights / weight_sum
+
+
+def sample_training_timesteps(
+    batch_size: int,
+    schedule,
+    device: torch.device,
+    timestep_probs: torch.Tensor | None,
+) -> torch.Tensor:
+    if timestep_probs is None:
+        return schedule.sample_timesteps(batch_size)
+
+    return torch.multinomial(
+        timestep_probs,
+        num_samples=batch_size,
+        replacement=True,
+    ).to(device=device, dtype=torch.long)
+
+
+def print_timestep_sampling_distribution(
+    timestep_probs: torch.Tensor | None,
+    num_timesteps: int,
+) -> None:
+    if timestep_probs is None:
+        print("Training timestep sampling: uniform")
+        return
+
+    bins = [
+        (0, 100),
+        (100, 300),
+        (300, 600),
+        (600, 900),
+        (900, 1000),
+    ]
+
+    print("Training timestep sampling distribution:")
+
+    for lo, hi in bins:
+        lo_clamped = max(0, min(lo, num_timesteps))
+        hi_clamped = max(0, min(hi, num_timesteps))
+
+        if hi_clamped <= lo_clamped:
+            continue
+
+        mass = timestep_probs[lo_clamped:hi_clamped].sum().item()
+        print(f"  t[{lo_clamped},{hi_clamped}) : {mass:.4f}")
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     train_loader: torch.utils.data.DataLoader,
@@ -95,6 +230,7 @@ def train_one_epoch(
     use_amp: bool,
     grad_clip: float | None,
     log_every: int,
+    timestep_probs: torch.Tensor | None,
 ) -> tuple[float, float]:
     model.train()
 
@@ -110,7 +246,12 @@ def train_one_epoch(
 
         batch_size = x_0.shape[0]
 
-        t = schedule.sample_timesteps(batch_size)
+        t = sample_training_timesteps(
+            batch_size=batch_size,
+            schedule=schedule,
+            device=device,
+            timestep_probs=timestep_probs,
+        )
         noise = torch.randn_like(x_0)
         x_t = schedule.q_sample(x_0=x_0, t=t, noise=noise)
 
@@ -299,6 +440,14 @@ def main() -> None:
     )
 
     schedule = build_schedule_from_config(cfg, device=device)
+
+    timestep_sampling_cfg = get_timestep_sampling_config(cfg)
+    timestep_probs = build_timestep_sampling_probs(
+        num_timesteps=schedule.timesteps,
+        sampling_cfg=timestep_sampling_cfg,
+        device=device,
+    )
+
     model = build_classifier_from_config(cfg).to(device)
 
     optimizer = torch.optim.AdamW(
@@ -344,6 +493,10 @@ def main() -> None:
     print(f"Val batches: {len(loaders.val)}")
     print(f"Timesteps: {schedule.timesteps}")
     print(f"AMP: {use_amp}")
+    print_timestep_sampling_distribution(
+        timestep_probs=timestep_probs,
+        num_timesteps=schedule.timesteps,
+    )
     print("-" * 80)
 
     for epoch in range(start_epoch, epochs + 1):
@@ -359,6 +512,7 @@ def main() -> None:
             use_amp=use_amp,
             grad_clip=grad_clip,
             log_every=log_every,
+            timestep_probs=timestep_probs,
         )
 
         val_loss, val_acc, timestep_acc = validate(

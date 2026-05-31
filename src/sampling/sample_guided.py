@@ -308,6 +308,13 @@ def main():
 
     parser.add_argument("--class-labels", type=str, default="0,1,3,5,8")
     parser.add_argument("--guidance-scales", type=str, default="0,1,2,4")
+    parser.add_argument(
+        "--schedule-mode",
+        type=str,
+        default="sin",
+        choices=["constant", "sin", "sin2"],
+        help="Guidance scaling schedule: constant, sin, or sin2.",
+    )
     parser.add_argument("--num-images", type=int, default=9)
     parser.add_argument("--seed", type=int, default=999)
     parser.add_argument("--out-dir", type=str, default="outputs/guided_samples")
@@ -367,6 +374,7 @@ def main():
 
     print(f"Classes: {class_labels}")
     print(f"Guidance scales: {guidance_scales}")
+    print(f"Guidance schedule: {args.schedule_mode}")
     print(f"Samples per grid: {args.num_images}")
 
     for class_label in class_labels:
@@ -377,12 +385,14 @@ def main():
         class_name = CIFAR10_CLASSES[class_label]
         print(f"Sampling class {class_label}: {class_name}")
 
+        # Same initial noise for all scales of this class.
         init_generator = make_generator(device, args.seed + 10_000 * class_label)
         initial_noise = torch.randn(shape, device=device, generator=init_generator)
 
         comparison_rows = []
 
         for scale in guidance_scales:
+            # Same stochastic reverse-process noise for all scales of this class.
             step_generator = make_generator(device, args.seed + 20_000 * class_label)
 
             labels = torch.full(
@@ -396,6 +406,7 @@ def main():
                 shape=shape,
                 class_labels=labels,
                 guidance_scale=scale,
+                guidance_schedule=args.schedule_mode,
                 clip_denoised=args.clip_denoised,
                 initial_noise=initial_noise,
                 generator=step_generator,
@@ -405,7 +416,11 @@ def main():
 
             grid = make_grid(samples, nrow=nrow, padding=2)
             scale_name = str(scale).replace(".", "p")
-            sample_path = out_dir / f"class_{class_label}_{class_name}_scale_{scale_name}.png"
+
+            sample_path = (
+                out_dir
+                / f"class_{class_label}_{class_name}_{args.schedule_mode}_scale_{scale_name}.png"
+            )
 
             save_image(grid, sample_path)
             print(f"Saved: {sample_path}")
@@ -414,7 +429,11 @@ def main():
 
         comparison = torch.cat(comparison_rows, dim=0)
         comparison_grid = make_grid(comparison, nrow=args.num_images, padding=2)
-        comparison_path = out_dir / f"class_{class_label}_{class_name}_scale_comparison.png"
+
+        comparison_path = (
+            out_dir
+            / f"class_{class_label}_{class_name}_{args.schedule_mode}_scale_comparison.png"
+        )
 
         save_image(comparison_grid, comparison_path)
         print(f"Saved comparison: {comparison_path}")

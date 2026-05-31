@@ -12,7 +12,11 @@ diffusion:
   beta_start: 0.0001
   beta_end: 0.02
   schedule: "linear"
-  sampling_strategy: "linear_decay"  # Options: "uniform", "linear_decay", "inverse_power", "exponential", "cosine"
+
+timestep_sampling:
+  strategy: "sine"
+  power: 1.0
+  floor: 0.30
 
 model:
   name: unet
@@ -24,8 +28,8 @@ model:
   blocks_per_stage: 4
 
 training:
-  epochs: 100
-  lr: 0.0003
+  epochs: 120
+  lr: 0.00005
   weight_decay: 0.00001
   amp: true
   grad_clip: 1.0
@@ -33,4 +37,4 @@ training:
 
 checkpoint:
   dir: "checkpoints"
-  filename: "classifier_tester.pt"
+  filename: "classifier_sine_fine.pt"

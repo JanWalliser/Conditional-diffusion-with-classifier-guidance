@@ -139,6 +139,59 @@ class DDPMSampler:
                 clip_denoised=clip_denoised,
             )
 
+    #Helper functions for schedule
+    def _num_timesteps(self) -> int:
+        if hasattr(self.ddpm, "num_timesteps"):
+            return int(self.ddpm.num_timesteps)
+
+        if hasattr(self.ddpm, "schedule"):
+            schedule = self.ddpm.schedule
+
+            if isinstance(schedule, dict):
+                if "betas" in schedule:
+                    return int(schedule["betas"].shape[0])
+                if "alpha_bars" in schedule:
+                    return int(schedule["alpha_bars"].shape[0])
+
+            if hasattr(schedule, "timesteps"):
+                return int(schedule.timesteps)
+
+        raise AttributeError(
+            "Could not infer number of diffusion timesteps. "
+            "Expected self.ddpm.num_timesteps or self.ddpm.schedule."
+        )
+
+
+    def _guidance_scale_at_t(
+        self,
+        base_scale: float,
+        timestep: int,
+        guidance_schedule: str,
+    ) -> float:
+        if base_scale == 0.0:
+            return 0.0
+
+        mode = guidance_schedule.lower()
+        num_timesteps = self._num_timesteps()
+        tau = float(timestep) / float(max(num_timesteps - 1, 1))
+
+        if mode in ("constant", "const"):
+            return base_scale
+
+        if mode in ("sin", "sine"):
+            return base_scale * math.sin(math.pi * tau)
+
+        if mode in ("sin2", "sin^2", "sine2", "sine_squared"):
+            return base_scale * (math.sin(math.pi * tau) ** 2)
+
+        raise ValueError(
+            f"Unknown guidance_schedule={guidance_schedule!r}. "
+            "Use one of: constant, sin, sin2."
+        )
+    
+
+
+
 
     def p_sample(
         self,
@@ -148,11 +201,10 @@ class DDPMSampler:
         model_kwargs: Optional[Dict[str, Any]] = None,
         clip_denoised: bool = True,
         guidance_scale: Optional[float] = None,
+        guidance_schedule: str = "sin",
         generator: Optional[torch.Generator] = None,
     ) -> Dict[str, torch.Tensor]:
-        
-
-        """##################################################TODO Change for 50 speps
+        """
         One reverse DDPM step:
             x_t -> x_{t-1}
         """
@@ -177,21 +229,25 @@ class DDPMSampler:
             mean = out["mean"]
             variance = out["variance"]
             log_variance = out["log_variance"]
-##################################################################################################################
-        scale = self.guidance_scale if guidance_scale is None else float(guidance_scale)
 
-        if self.classifier is not None and class_labels is not None and scale != 0.0:
+        # Base scale: either sampler default or scale passed to this call
+        base_scale = self.guidance_scale if guidance_scale is None else float(guidance_scale)
+
+        if self.classifier is not None and class_labels is not None and base_scale != 0.0:
             grad = self.classifier_gradient(
                 x_t=x_t,
                 t=t,
                 class_labels=class_labels,
             )
 
-            T = num_timesteps - 1
-            tau = float(timestep) / float(T)    
-            scale = scale * (math.sin(math.pi * tau))
+            # Actual timestep-dependent guidance scale
+            scale_t = self._guidance_scale_at_t(
+                base_scale=base_scale,
+                timestep=timestep,
+                guidance_schedule=guidance_schedule,
+            )
 
-            mean = mean + scale * variance * grad
+            mean = mean + scale_t * variance * grad
 
         if timestep == 0:
             noise = torch.zeros_like(x_t)
@@ -221,12 +277,13 @@ class DDPMSampler:
         model_kwargs: Optional[Dict[str, Any]] = None,
         clip_denoised: bool = True,
         guidance_scale: Optional[float] = None,
+        guidance_schedule: str = "sin",
         return_intermediates: bool = False,
         intermediate_every: int = 100,
         initial_noise: Optional[torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
     ) -> Union[torch.Tensor, Dict[str, Any]]:
-    
+
         self.ddpm.eval()
 
         if self.classifier is not None:
@@ -241,7 +298,6 @@ class DDPMSampler:
                 generator=generator,
             )
         else:
-            
             x_t = initial_noise.clone().to(device=device)
 
         intermediates = []
@@ -254,6 +310,7 @@ class DDPMSampler:
                 model_kwargs=model_kwargs,
                 clip_denoised=clip_denoised,
                 guidance_scale=guidance_scale,
+                guidance_schedule=guidance_schedule,
                 generator=generator,
             )
 

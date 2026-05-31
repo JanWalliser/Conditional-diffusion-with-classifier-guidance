@@ -66,8 +66,13 @@ def plot_timestep_accuracy(
 
     plt.figure(figsize=(9, 5))
 
+    labels = [
+    "Accuracy Sine Sampling",
+    "Accuracy Linear Decay Sampling",
+]
     for idx, (timesteps, accuracies) in enumerate(runs, start=1):
-        label = "Accuracy" if len(runs) == 1 else f"Run {idx}"
+       
+        
 
         plt.plot(
             timesteps,
@@ -75,7 +80,7 @@ def plot_timestep_accuracy(
             marker="o",
             linewidth=2,
             markersize=4,
-            label=label,
+            label=labels[idx-1],
         )
 
     plt.xlabel("Diffusion timestep t")
