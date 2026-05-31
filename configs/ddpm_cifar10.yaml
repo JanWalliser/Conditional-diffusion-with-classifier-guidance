@@ -1,0 +1,61 @@
+seed: 69420
+
+data:
+  root: "data"
+  batch_size: 128
+  num_workers: 4
+  val_fraction: 0.1
+  download: true
+
+diffusion:
+  timesteps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
+  schedule: "linear"
+  sampling_strategy: "uniform"
+
+model:
+  name: "denoising_unet"
+  in_channels: 3
+  out_channels: 3
+  input_size: 32
+  base_channels: 96
+  time_embedding_dim: 384
+  channel_mults: [1, 2, 2, 4]
+  blocks_per_stage: 2
+  dropout: 0.1
+  attention_resolutions: [16, 8]
+  channels_per_head: 64
+
+training:
+  epochs: 50
+  lr: 0.0002
+  weight_decay: 0.0
+  amp: true
+  grad_clip: 1.0
+  log_every: 50
+  sample_every: 5
+  save_every: 1
+  val_max_batches: 20
+
+checkpoint:
+  dir: "checkpoints"
+  filename: "ddpm_cifar10_unet96.pt"
+
+samples:
+  dir: "outputs/ddpm_samples"
+  num_images: 64
+  batch_size: 64
+
+
+
+sampling:
+  every_epochs: 1
+  num_samples: 9
+  out_dir: "outputs/ddpm_samples"
+  save_individual: true
+
+logging:
+  dir: "logs"
+  filename: "train_ddpm_cifar10.log"
+  csv_filename: "train_ddpm_cifar10_metrics.csv"

@@ -1,0 +1,55 @@
+seed: 69420
+
+data:
+  root: "data"
+  batch_size: 128
+  num_workers: 4
+  val_fraction: 0.1
+  download: true
+
+diffusion:
+  timesteps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
+  schedule: "linear"
+  sampling_strategy: "uniform"
+
+model:
+  name: "denoising_unet"
+  in_channels: 3
+  out_channels: 3
+  input_size: 32
+  base_channels: 96
+  time_embedding_dim: 384
+  channel_mults: [1, 2, 2, 4]
+  blocks_per_stage: 2
+  dropout: 0.1
+  attention_resolutions: [16, 8]
+  channels_per_head: 64
+
+# Resume from the epoch-100 DDPM checkpoint. epochs: 120 means epochs 101--120.
+training:
+  epochs: 120
+  lr: 0.00005
+  weight_decay: 0.0
+  amp: true
+  grad_clip: 1.0
+  log_every: 50
+  save_every: 1
+  val_max_batches: 20
+
+checkpoint:
+  dir: "checkpoints/experiments"
+  filename: "ddpm_cifar10_unet96_finetune_20_lr5e5.pt"
+
+sampling:
+  every_epochs: 20
+  num_samples: 9
+  seed: 999
+  out_dir: "outputs/experiments/ddpm_samples_finetune"
+  save_individual: true
+
+logging:
+  dir: "logs/experiments"
+  filename: "train_ddpm_cifar10_unet96_finetune_20_lr5e5.log"
+  csv_filename: "train_ddpm_cifar10_unet96_finetune_20_lr5e5_metrics.csv"

@@ -1,0 +1,154 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# =========================
+# Virtual environments
+# =========================
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# =========================
+# IDE / editor
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# Jupyter / notebooks
+# =========================
+.ipynb_checkpoints/
+
+# Optional: ignore notebooks only if you do NOT use them as deliverables
+# *.ipynb
+
+# =========================
+# PyTorch / ML artifacts
+# =========================
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Model export files
+*.onnx
+*.torchscript
+
+# =========================
+# Data
+# =========================
+data/
+datasets/
+cifar-10-batches-py/
+cifar-10-python.tar.gz
+
+# Keep folder structure if needed
+!data/.gitkeep
+!datasets/.gitkeep
+
+# =========================
+# Experiment outputs
+# =========================
+outputs/
+runs/
+results/
+samples/
+generated/
+eval/
+logs/
+
+# TensorBoard
+events.out.tfevents.*
+
+# Weights & Biases
+wandb/
+
+# Hydra / config output folders, if used
+multirun/
+outputs/
+
+# =========================
+# Metrics / temporary experiment files
+# =========================
+*.log
+*.tmp
+*.temp
+*.csv.tmp
+
+# Be careful: do NOT ignore all CSV files if you want to commit final result tables.
+# *.csv
+
+# =========================
+# Coverage / testing
+# =========================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# =========================
+# Type checkers / linters
+# =========================
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# =========================
+# Packaging / local config
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# LaTeX / report artifacts
+# =========================
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.run.xml
+*.synctex.gz
+*.toc

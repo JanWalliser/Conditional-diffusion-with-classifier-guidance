@@ -1,0 +1,51 @@
+seed: 69420
+
+# Smoke version of the second sine classifier stage.
+# Original experiment idea: finetune with sine power=1 and floor=0.30.
+data:
+  root: "data"
+  batch_size: 4
+  num_workers: 0
+  val_fraction: 0.1
+  download: true
+  max_train_samples: 8
+  max_val_samples: 4
+
+diffusion:
+  timesteps: 10
+  beta_start: 0.0001
+  beta_end: 0.02
+  schedule: "linear"
+
+timestep_sampling:
+  strategy: "sine"
+  power: 1.0
+  floor: 0.30
+
+model:
+  name: unet
+  in_channels: 3
+  num_classes: 10
+  input_size: 32
+  base_channels: 16
+  time_embedding_dim: 64
+  channel_mults: [1, 2]
+  blocks_per_stage: 1
+  dropout: 0.0
+  attention_resolutions: [8]
+  channels_per_head: 16
+
+training:
+  epochs: 2
+  lr: 0.00005
+  weight_decay: 0.00001
+  amp: true
+  grad_clip: 1.0
+  log_every: 1
+
+validation:
+  fixed_timesteps: [1, 5, 9]
+
+checkpoint:
+  dir: "checkpoints/repro"
+  filename: "classifier_sine_power1_finetune_smoke.pt"

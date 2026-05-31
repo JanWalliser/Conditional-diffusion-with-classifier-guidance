@@ -1,0 +1,40 @@
+seed: 69420
+
+data:
+  root: "data"
+  batch_size: 256
+  num_workers: 2
+  val_fraction: 0.1
+  download: true
+
+diffusion:
+  timesteps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
+  schedule: "linear"
+
+timestep_sampling:
+  strategy: "sine"
+  power: 1.0
+  floor: 0.30
+
+model:
+  name: unet
+  num_classes: 10
+  base_channels: 128
+  time_embedding_dim: 128
+  dropout: 0.2
+  activation: "gelu"
+  blocks_per_stage: 4
+
+training:
+  epochs: 120
+  lr: 0.00005
+  weight_decay: 0.00001
+  amp: true
+  grad_clip: 1.0
+  log_every: 20
+
+checkpoint:
+  dir: "checkpoints"
+  filename: "classifier_sine_fine.pt"

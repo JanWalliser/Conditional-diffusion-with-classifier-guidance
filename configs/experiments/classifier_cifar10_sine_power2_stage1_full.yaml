@@ -1,0 +1,49 @@
+seed: 69420
+
+data:
+  root: "data"
+  batch_size: 72
+  num_workers: 2
+  val_fraction: 0.1
+  download: true
+
+diffusion:
+  timesteps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
+  schedule: "linear"
+
+# Stage 1 of the sine classifier experiment.
+# Intended to reproduce the long sine pretraining stage discussed in the report notes.
+timestep_sampling:
+  strategy: "sine"
+  power: 2.0
+  floor: 0.10
+
+model:
+  name: unet
+  in_channels: 3
+  num_classes: 10
+  input_size: 32
+  base_channels: 128
+  time_embedding_dim: 128
+  channel_mults: [1, 2, 4]
+  blocks_per_stage: 4
+  dropout: 0.2
+  attention_resolutions: [8]
+  channels_per_head: 64
+
+training:
+  epochs: 80
+  lr: 0.00005
+  weight_decay: 0.00001
+  amp: true
+  grad_clip: 1.0
+  log_every: 20
+
+validation:
+  fixed_timesteps: [1, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 999]
+
+checkpoint:
+  dir: "checkpoints/experiments"
+  filename: "classifier_cifar10_unet128_sine_power2_stage1_full.pt"

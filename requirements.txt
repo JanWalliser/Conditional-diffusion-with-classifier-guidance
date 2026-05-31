@@ -1,0 +1,15 @@
+# Core project dependencies.
+# PyTorch is installed separately from requirements-torch-cu128.txt because CUDA wheels
+# are served from the official PyTorch wheel index, not only from normal PyPI.
+# Recommended setup:
+#   python -m pip install -r requirements-torch-cu128.txt
+#   python -m pip install -r requirements.txt
+
+colorama>=0.4.6
+matplotlib>=3.8
+numpy>=1.26,<3.0
+pandas>=2.0
+pillow>=10.0
+PyYAML>=6.0
+scipy>=1.11
+tqdm>=4.66

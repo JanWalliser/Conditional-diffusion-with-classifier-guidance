@@ -1,0 +1,70 @@
+seed: 69420
+
+# Smoke-test DDPM pretraining config.
+# Original full run used 1000 timesteps and a larger U-Net; this uses 10 timesteps
+# and a tiny U-Net so the reproducibility pipeline can be tested quickly.
+data:
+  root: "data"
+  batch_size: 4
+  num_workers: 0
+  val_fraction: 0.1
+  download: true
+  max_train_samples: 8
+  max_val_samples: 4
+  image_size: 32
+  channels: 3
+
+diffusion:
+  timesteps: 10
+  beta_start: 0.0001
+  beta_end: 0.02
+  schedule: "linear"
+  sampling_strategy: "uniform"
+
+model:
+  name: "denoising_unet"
+  in_channels: 3
+  out_channels: 3
+  input_size: 32
+  base_channels: 16
+  time_embedding_dim: 64
+  channel_mults: [1, 2]
+  blocks_per_stage: 1
+  dropout: 0.0
+  attention_resolutions: [8]
+  channels_per_head: 16
+
+training:
+  epochs: 1
+  lr: 0.0002
+  weight_decay: 0.0
+  amp: true
+  grad_clip: 1.0
+  log_every: 1
+  sample_every: 1
+  save_every: 1
+  train_max_batches: 1
+  val_max_batches: 1
+
+checkpoint:
+  dir: "checkpoints/repro"
+  filename: "ddpm_cifar10_tiny_pretrain_smoke.pt"
+
+samples:
+  dir: "outputs/repro/ddpm_samples_pretrain"
+  num_images: 1
+  batch_size: 1
+  fixed_seed: 999
+  fixed_num_images: 1
+
+sampling:
+  every_epochs: 1
+  num_samples: 1
+  out_dir: "outputs/repro/ddpm_samples_pretrain"
+  save_individual: true
+  seed: 999
+
+logging:
+  dir: "logs/repro"
+  filename: "ddpm_pretrain_smoke.log"
+  csv_filename: "ddpm_pretrain_smoke_metrics.csv"

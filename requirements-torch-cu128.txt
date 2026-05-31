@@ -1,0 +1,8 @@
+# CUDA 12.8 PyTorch wheels.
+# Do not add '+cu128' to the package spec here. The CUDA build is selected by the
+# PyTorch wheel index below.
+--index-url https://download.pytorch.org/whl/cu128
+
+torch==2.11.0
+torchvision==0.26.0
+torchaudio==2.11.0
